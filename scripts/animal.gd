@@ -135,23 +135,6 @@ func build_model() -> void:
 			add_box(Vector3(0.18, 0.18, 0.18), Vector3(0, 0.42, 0.43), Color("#eee5d8"))
 			add_face_eyes(0.13, 0.65, -0.625, 0.065)
 			add_legs(Color("#8c654c"), 0.19, 0.23, 0.20, 0.10)
-		"duck":
-			body_height = 0.78
-			move_speed = 1.18
-			collision_size = Vector3(0.52, 0.78, 0.62)
-			add_box(Vector3(0.58, 0.44, 0.72), Vector3(0, 0.43, 0.05), Color("#8e6841"))
-			add_box(Vector3(0.43, 0.42, 0.40), Vector3(0, 0.73, -0.43), Color("#376852"))
-			add_box(Vector3(0.38, 0.12, 0.30), Vector3(0, 0.65, -0.76), Color("#e6a43c"))
-			add_box(Vector3(0.10, 0.28, 0.45), Vector3(-0.34, 0.46, 0.06), Color("#755333"))
-			add_box(Vector3(0.10, 0.28, 0.45), Vector3(0.34, 0.46, 0.06), Color("#755333"))
-			add_face_eyes(0.12, 0.82, -0.635, 0.060)
-			for x_sign in [-1.0, 1.0]:
-				var leg := add_box(Vector3(0.07, 0.25, 0.07), Vector3(x_sign * 0.13, 0.125, 0.05), Color("#d98e2f"))
-				var foot := add_box(Vector3(0.15, 0.045, 0.22), Vector3(x_sign * 0.13, 0.025, -0.02), Color("#e5a13a"))
-				leg.set_meta("walk_side", x_sign)
-				foot.set_meta("walk_side", x_sign)
-				walking_leg_parts.append(leg)
-				walking_leg_parts.append(foot)
 		"monster":
 			body_height = 1.55
 			move_speed = 1.65
@@ -245,9 +228,9 @@ func apply_push(force: Vector3) -> void:
 
 func animate_walk(delta: float) -> void:
 	var is_walking := move_direction.length_squared() > 0.01 and is_on_floor()
-	var frequency := 11.5 if species == "rabbit" else (10.0 if species == "chicken" else (8.5 if species == "duck" else (7.5 if species == "pig" else 6.2)))
-	var swing := 0.52 if species in ["chicken", "rabbit"] else (0.40 if species in ["duck", "monster"] else (0.34 if species == "pig" else 0.30))
-	var bob_amount := 0.040 if species == "rabbit" else (0.018 if species == "chicken" else (0.024 if species == "duck" else (0.025 if species == "pig" else 0.032)))
+	var frequency := 11.5 if species == "rabbit" else (10.0 if species == "chicken" else (7.5 if species == "pig" else 6.2))
+	var swing := 0.52 if species in ["chicken", "rabbit"] else (0.40 if species == "monster" else (0.34 if species == "pig" else 0.30))
+	var bob_amount := 0.040 if species == "rabbit" else (0.018 if species == "chicken" else (0.025 if species == "pig" else 0.032))
 	if is_walking:
 		walk_phase += delta * frequency
 		visual_root.position.y = abs(sin(walk_phase * 2.0)) * bob_amount

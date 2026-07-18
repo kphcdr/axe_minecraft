@@ -3,7 +3,7 @@ extends Node3D
 const PlayerScript := preload("res://scripts/player.gd")
 const AnimalScript := preload("res://scripts/animal.gd")
 const ItemDropScript := preload("res://scripts/item_drop.gd")
-const MATERIAL_NAMES := ["石头", "木头", "玻璃", "木门", "脚手架", "草地", "水", "红砖", "灯块", "树叶", "原木", "泥土", "沙子", "熔炉", "肉", "床"]
+const MATERIAL_NAMES := ["石头", "木头", "玻璃", "木门", "脚手架", "草地", "水", "红砖", "灯块", "树叶", "原木", "泥土", "沙子", "熔炉", "肉", "床", "煤炭", "火把"]
 const MATERIAL_COLORS := [
 	Color("#71757c"),
 	Color("#a66b3f"),
@@ -21,12 +21,14 @@ const MATERIAL_COLORS := [
 	Color("#4b4d50"),
 	Color("#a74335"),
 	Color("#b94b48"),
+	Color("#25272a"),
+	Color("#ffb43f"),
 ]
 
 var selected_material := 0
 var selected_hotbar_slot := 0
 var hotbar_slot_materials: Array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-var inventory := [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+var inventory := [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 var player_health := 20.0
 var player_hunger := 20.0
 var starvation_damage_timer := 3.0
@@ -36,6 +38,7 @@ var player_was_on_floor := false
 var fall_peak_y := 2.0
 var monster_attack_cooldown := 0.0
 var occupied: Dictionary = {}
+var light_source_cells: Dictionary = {}
 var info_label: Label
 var hotbar_labels: Array[Label] = []
 var hotbar_panels: Array[PanelContainer] = []
@@ -78,6 +81,8 @@ var furnace_panel: PanelContainer
 var furnace_status_label: Label
 var furnace_active := false
 var furnace_timer := 0.0
+var furnace_output_material := 2
+var torch_flame_material: Material
 var world_environment: Environment
 var sun_light: DirectionalLight3D
 var moon_light: DirectionalLight3D
@@ -256,7 +261,7 @@ func update_day_night(delta: float) -> void:
 
 
 func create_animals() -> void:
-	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken", "rabbit", "rabbit", "duck", "duck"]
+	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken", "rabbit", "rabbit"]
 	for index in species_list.size():
 		var angle := TAU * float(index) / float(species_list.size()) + randf_range(-0.25, 0.25)
 		var distance := randf_range(10.0, 22.0)
@@ -274,7 +279,7 @@ func spawn_animals_out_of_view() -> void:
 		camera_forward.y = 0
 	camera_forward = camera_forward.normalized()
 	var behind: Vector3 = -camera_forward
-	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken", "rabbit", "duck"]
+	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken", "rabbit"]
 	# 怪物严格只进入夜间生成列表。
 	if is_night_time():
 		species_list.append_array(["monster", "monster"])
@@ -289,6 +294,8 @@ func spawn_animals_out_of_view() -> void:
 			spawn_position = player.global_position + direction * distance
 			spawn_position.y = 1.5
 			var ground_cell := Vector3i(roundi(spawn_position.x), 0, roundi(spawn_position.z))
+			if animal_species == "monster" and is_position_lit(spawn_position):
+				continue
 			if occupied.has(ground_cell) and occupied[ground_cell].get_meta("material_index", -1) in [5, 11, 12]:
 				found_ground = true
 				break
@@ -318,14 +325,21 @@ func attack_animal(animal: Node) -> void:
 
 
 func on_animal_died(animal_species: String, drop_position: Vector3) -> void:
-	var meat_drop: int = {"cow": 3, "sheep": 2, "pig": 3, "chicken": 1, "rabbit": 1, "duck": 2, "monster": 0}.get(animal_species, 0)
+	var meat_drop: int = {"cow": 3, "sheep": 2, "pig": 3, "chicken": 1, "rabbit": 1, "monster": 0}.get(animal_species, 0)
 	if meat_drop > 0:
 		create_item_drop(14, meat_drop, drop_position)
 	show_message("击败%s，掉落了 %d 块肉" % [get_species_name(animal_species), meat_drop])
 
 
 func get_species_name(animal_species: String) -> String:
-	return {"cow": "牛", "sheep": "羊", "pig": "猪", "chicken": "鸡", "rabbit": "兔子", "duck": "鸭子", "monster": "暗影兽"}.get(animal_species, "动物")
+	return {"cow": "牛", "sheep": "羊", "pig": "猪", "chicken": "鸡", "rabbit": "兔子", "monster": "暗影兽"}.get(animal_species, "动物")
+
+
+func is_position_lit(world_position: Vector3) -> bool:
+	for light_cell: Vector3i in light_source_cells:
+		if Vector3(light_cell).distance_to(world_position) <= 8.0:
+			return true
+	return false
 
 
 func is_night_time() -> bool:
@@ -693,6 +707,18 @@ void fragment() {
 	bed_pillow.roughness = 0.92
 	bed_pillow_material = bed_pillow
 	block_materials.append(bed_blanket_material)
+	var coal_material := StandardMaterial3D.new()
+	coal_material.albedo_color = Color("#25272a")
+	coal_material.roughness = 0.98
+	block_materials.append(coal_material)
+	var torch_flame := StandardMaterial3D.new()
+	torch_flame.albedo_color = Color("#ffb43f")
+	torch_flame.emission_enabled = true
+	torch_flame.emission = Color("#ff8d25")
+	torch_flame.emission_energy_multiplier = 2.1
+	torch_flame.roughness = 0.35
+	torch_flame_material = torch_flame
+	block_materials.append(torch_flame_material)
 
 
 func create_shader_material(code: String) -> ShaderMaterial:
@@ -1046,7 +1072,40 @@ func create_block(grid_position: Vector3i, material_index: int, removable := tru
 	block.add_child(collision)
 	add_child(block)
 	occupied[grid_position] = block
+	if material_index == 8:
+		light_source_cells[grid_position] = true
 	return block
+
+
+func create_torch(grid_position: Vector3i) -> StaticBody3D:
+	var torch := StaticBody3D.new()
+	torch.position = Vector3(grid_position)
+	torch.set_meta("grid_position", grid_position)
+	torch.set_meta("material_index", 17)
+	torch.set_meta("removable", true)
+	create_torch_visual(torch)
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(0.22, 0.78, 0.22)
+	collision.shape = shape
+	collision.position.y = -0.08
+	torch.add_child(collision)
+	var light := OmniLight3D.new()
+	light.position.y = 0.32
+	light.light_color = Color("#ffc46b")
+	light.light_energy = 1.0
+	light.omni_range = 6.0
+	light.shadow_enabled = false
+	torch.add_child(light)
+	add_child(torch)
+	occupied[grid_position] = torch
+	light_source_cells[grid_position] = true
+	return torch
+
+
+func create_torch_visual(parent: Node3D) -> void:
+	add_preview_box(parent, Vector3(0.13, 0.72, 0.13), Vector3(0, -0.11, 0), block_materials[1])
+	add_preview_box(parent, Vector3(0.25, 0.25, 0.25), Vector3(0, 0.34, 0), torch_flame_material)
 
 
 func create_glass_edges(block: Node3D) -> void:
@@ -1110,8 +1169,8 @@ func create_furnace_details(parent: Node3D) -> void:
 
 
 func place_block(hit_position: Vector3) -> void:
-	if selected_material == 14:
-		show_message("肉不能作为方块放置")
+	if selected_material in [14, 16]:
+		show_message("这种物品不能作为方块放置")
 		return
 	var grid_position := Vector3i(
 		roundi(hit_position.x),
@@ -1145,6 +1204,8 @@ func place_block(hit_position: Vector3) -> void:
 		queue_water_spread(grid_position, 0, source_id, Vector2.ZERO)
 	elif selected_material == 15:
 		create_bed(grid_position)
+	elif selected_material == 17:
+		create_torch(grid_position)
 	else:
 		create_block(grid_position, selected_material)
 	update_ui()
@@ -1168,6 +1229,8 @@ func remove_block(collider: Node) -> void:
 		update_ui()
 		return
 	var grid_position: Vector3i = collider.get_meta("grid_position")
+	if material_index in [8, 17]:
+		light_source_cells.erase(grid_position)
 	if grid_position.y == 0 and generated_ground_cells.has(grid_position):
 		# 先生成下方实体碰撞，再移除表层，杜绝一帧内掉进尚未加载的地下。
 		ensure_subsurface_area(grid_position)
@@ -1658,6 +1721,21 @@ func craft_recipe(recipe_index: int) -> void:
 				return
 			inventory[1] -= 6
 			inventory[15] += 1
+		5:
+			if inventory[16] < 1 or inventory[1] < 1:
+				show_message("合成失败：需要 1 个煤炭和 1 个木头")
+				return
+			inventory[16] -= 1
+			inventory[1] -= 1
+			inventory[17] += 4
+		6:
+			if inventory[17] < 1 or inventory[2] < 1 or inventory[0] < 1:
+				show_message("合成失败：需要火把、玻璃和石头各 1 个")
+				return
+			inventory[17] -= 1
+			inventory[2] -= 1
+			inventory[0] -= 1
+			inventory[8] += 1
 	update_ui()
 
 
@@ -1670,14 +1748,17 @@ func toggle_furnace() -> void:
 	update_furnace_status()
 
 
-func start_smelting() -> void:
+func start_smelting(recipe_index: int) -> void:
 	if furnace_active:
 		show_message("熔炉正在工作")
 		return
-	if inventory[12] < 1:
-		show_message("烧制失败：背包里没有沙子")
+	var input_material := 12 if recipe_index == 0 else 1
+	var output_material := 2 if recipe_index == 0 else 16
+	if inventory[input_material] < 1:
+		show_message("烧制失败：背包里没有%s" % MATERIAL_NAMES[input_material])
 		return
-	inventory[12] -= 1
+	inventory[input_material] -= 1
+	furnace_output_material = output_material
 	furnace_active = true
 	furnace_timer = 3.0
 	update_ui()
@@ -1688,9 +1769,9 @@ func update_furnace_status() -> void:
 	if not furnace_status_label:
 		return
 	if furnace_active:
-		furnace_status_label.text = "烧制中…… %.1f 秒" % furnace_timer
+		furnace_status_label.text = "正在烧制%s…… %.1f 秒" % [MATERIAL_NAMES[furnace_output_material], furnace_timer]
 	else:
-		furnace_status_label.text = "放入沙子即可烧制玻璃"
+		furnace_status_label.text = "选择要进行的烧制"
 
 
 func create_ui() -> void:
@@ -1779,8 +1860,8 @@ func create_ui() -> void:
 
 	backpack_panel = PanelContainer.new()
 	backpack_panel.set_anchors_preset(Control.PRESET_CENTER)
-	backpack_panel.position = Vector2(-350, -255)
-	backpack_panel.custom_minimum_size = Vector2(700, 510)
+	backpack_panel.position = Vector2(-350, -310)
+	backpack_panel.custom_minimum_size = Vector2(700, 620)
 	backpack_panel.visible = false
 	layer.add_child(backpack_panel)
 	var backpack_layout := VBoxContainer.new()
@@ -1845,6 +1926,8 @@ func create_ui() -> void:
 		["4 木头  →  4 脚手架", 2],
 		["9 石头  →  1 熔炉", 3],
 		["6 木头  →  1 床", 4],
+		["1 煤炭 + 1 木头  →  4 火把", 5],
+		["1 火把 + 1 玻璃 + 1 石头  →  1 灯块", 6],
 	]:
 		var craft_button := Button.new()
 		craft_button.text = recipe[0]
@@ -1868,15 +1951,16 @@ func create_ui() -> void:
 	furnace_title.add_theme_font_size_override("font_size", 27)
 	furnace_layout.add_child(furnace_title)
 	furnace_status_label = Label.new()
-	furnace_status_label.text = "放入沙子即可烧制玻璃"
+	furnace_status_label.text = "选择要进行的烧制"
 	furnace_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	furnace_status_label.add_theme_font_size_override("font_size", 20)
 	furnace_layout.add_child(furnace_status_label)
-	var smelt_button := Button.new()
-	smelt_button.text = "烧制：1 沙子  →  1 玻璃（3秒）"
-	smelt_button.custom_minimum_size = Vector2(380, 58)
-	smelt_button.pressed.connect(start_smelting)
-	furnace_layout.add_child(smelt_button)
+	for recipe in [["烧制：1 沙子  →  1 玻璃（3秒）", 0], ["烧制：1 木头  →  1 煤炭（3秒）", 1]]:
+		var smelt_button := Button.new()
+		smelt_button.text = recipe[0]
+		smelt_button.custom_minimum_size = Vector2(380, 48)
+		smelt_button.pressed.connect(start_smelting.bind(recipe[1]))
+		furnace_layout.add_child(smelt_button)
 	var furnace_help := Label.new()
 	furnace_help.text = "按 E 关闭熔炉"
 	furnace_help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1916,6 +2000,10 @@ func create_material_preview(material_index: int) -> SubViewport:
 		add_preview_box(root, Vector3(0.82, 0.38, 0.58), Vector3.ZERO, block_materials[14])
 	elif material_index == 15:
 		create_bed_visual(root)
+	elif material_index == 16:
+		add_preview_box(root, Vector3(0.72, 0.62, 0.68), Vector3.ZERO, block_materials[16])
+	elif material_index == 17:
+		create_torch_visual(root)
 	else:
 		var preview_size := Vector3.ONE * (0.84 if material_index == 8 else 0.92)
 		add_preview_box(root, preview_size, Vector3.ZERO, block_materials[material_index])
@@ -2082,9 +2170,9 @@ func _process(delta: float) -> void:
 		if furnace_timer <= 0.0:
 			furnace_active = false
 			furnace_timer = 0.0
-			inventory[2] += 1
+			inventory[furnace_output_material] += 1
 			update_ui()
-			show_message("烧制完成：获得 1 个玻璃")
+			show_message("烧制完成：获得 1 个%s" % MATERIAL_NAMES[furnace_output_material])
 		update_furnace_status()
 	animal_spawn_timer -= delta
 	if animal_spawn_timer <= 0.0:
