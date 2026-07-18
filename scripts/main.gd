@@ -69,6 +69,7 @@ var leaf_material: Material
 var mining_target: Node
 var mining_progress := 0.0
 var mining_overlay: MeshInstance3D
+var mining_release_required := false
 var furnace_panel: PanelContainer
 var furnace_status_label: Label
 var furnace_active := false
@@ -967,13 +968,15 @@ func remove_block(collider: Node) -> void:
 func update_mining(delta: float) -> void:
 	var can_mine := not backpack_panel.visible and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	var holding := can_mine and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	if not holding:
+		mining_release_required = false
 	var candidate: Node = null
 	if player.ray.is_colliding():
 		candidate = player.ray.get_collider()
 	if not is_instance_valid(candidate) or not candidate.has_meta("grid_position") or not candidate.get_meta("removable", false):
 		candidate = null
 
-	if holding and candidate:
+	if holding and candidate and not mining_release_required:
 		if candidate != mining_target:
 			mining_target = candidate
 			mining_progress = 0.0
@@ -986,6 +989,8 @@ func update_mining(delta: float) -> void:
 			var completed_target := mining_target
 			clear_mining_progress()
 			remove_block(completed_target)
+			# 一次按住只破坏一个方块，防止准星自动向下连续挖穿多层地面。
+			mining_release_required = true
 	elif mining_target:
 		var material_index: int = mining_target.get_meta("material_index", 0) if is_instance_valid(mining_target) else 0
 		mining_progress = maxf(0.0, mining_progress - delta / (get_material_hardness(material_index) * 0.55))

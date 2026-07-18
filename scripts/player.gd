@@ -7,7 +7,7 @@ signal backpack_requested
 
 const SPEED := 7.0
 const SNEAK_SPEED := 2.6
-const JUMP_VELOCITY := 4.7
+const JUMP_VELOCITY := 5.05
 const LOOK_SENSITIVITY := 0.0022
 
 var camera: Camera3D
@@ -23,6 +23,9 @@ var input_locked := false
 func _ready() -> void:
 	name = "Player"
 	position = Vector3(0, 2.0, 6.0)
+	# 增大碰撞恢复距离，避免高速落入一格坑时嵌进坑壁边缘。
+	safe_margin = 0.035
+	floor_snap_length = 0.16
 
 	body_collision = CollisionShape3D.new()
 	capsule = CapsuleShape3D.new()
@@ -110,6 +113,11 @@ func _physics_process(delta: float) -> void:
 	var previous_position := global_position
 	var was_grounded := is_on_floor()
 	move_and_slide()
+	# 离地跳跃时不能继续吸附地面，否则坑沿会抵消一部分向上速度。
+	if velocity.y > 0.0:
+		floor_snap_length = 0.0
+	else:
+		floor_snap_length = 0.16
 	if sneaking and was_grounded and not has_close_support():
 		global_position = previous_position
 		velocity.x = 0
