@@ -2,8 +2,8 @@ extends Node3D
 
 const PlayerScript := preload("res://scripts/player.gd")
 const AnimalScript := preload("res://scripts/animal.gd")
-const MATERIAL_NAMES := ["石头", "木头", "玻璃", "木门", "脚手架", "草地", "水", "红砖", "灯块", "树叶", "原木", "泥土", "沙子", "熔炉"]
-const MATERIAL_COSTS := [5, 3, 8, 12, 1, 2, 2, 4, 15, 1, 2, 1, 2, 18]
+const ItemDropScript := preload("res://scripts/item_drop.gd")
+const MATERIAL_NAMES := ["石头", "木头", "玻璃", "木门", "脚手架", "草地", "水", "红砖", "灯块", "树叶", "原木", "泥土", "沙子", "熔炉", "肉"]
 const MATERIAL_COLORS := [
 	Color("#71757c"),
 	Color("#a66b3f"),
@@ -19,14 +19,16 @@ const MATERIAL_COLORS := [
 	Color("#70472b"),
 	Color("#d9c487"),
 	Color("#4b4d50"),
+	Color("#a74335"),
 ]
 
 var selected_material := 0
 var selected_hotbar_slot := 0
 var hotbar_slot_materials: Array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-var money := 300
-var meat_count := 0
-var inventory := [30, 30, 20, 5, 20, 20, 10, 20, 5, 0, 0, 0, 0, 0]
+var inventory := [30, 30, 20, 5, 20, 20, 10, 20, 5, 0, 0, 0, 0, 0, 0]
+var player_health := 20.0
+var player_hunger := 20.0
+var starvation_damage_timer := 3.0
 var occupied: Dictionary = {}
 var info_label: Label
 var hotbar_labels: Array[Label] = []
@@ -39,13 +41,6 @@ var message_timer := 0.0
 var selection_label: Label
 var selection_timer := 0.0
 var player: CharacterBody3D
-var order_label: Label
-var order_requirements := [0, 0, 0, 0]
-var order_width := 4
-var order_depth := 4
-var order_reward := 0
-var customer_name := ""
-var completed_orders := 0
 var block_materials: Array[Material] = []
 var glass_edge_material: Material
 var door_material: Material
@@ -231,11 +226,10 @@ func attack_animal(animal: Node) -> void:
 		show_message("命中%s：生命 %d / 10" % [get_species_name(str(animal.species)), remaining_health])
 
 
-func on_animal_died(animal_species: String) -> void:
+func on_animal_died(animal_species: String, drop_position: Vector3) -> void:
 	var meat_drop: int = {"cow": 3, "sheep": 2, "pig": 3, "chicken": 1}.get(animal_species, 1)
-	meat_count += meat_drop
-	show_message("击败%s，获得 %d 块肉" % [get_species_name(animal_species), meat_drop])
-	update_ui()
+	create_item_drop(14, meat_drop, drop_position)
+	show_message("击败%s，掉落了 %d 块肉" % [get_species_name(animal_species), meat_drop])
 
 
 func get_species_name(animal_species: String) -> String:
@@ -573,6 +567,10 @@ void fragment() {
 	block_materials[11] = generated_materials[6]  # 泥土
 	block_materials[12] = generated_materials[7]  # 沙子
 	block_materials[13] = generated_materials[8]  # 熔炉
+	var meat_material := StandardMaterial3D.new()
+	meat_material.albedo_color = Color("#a74335")
+	meat_material.roughness = 0.86
+	block_materials.append(meat_material)
 
 
 func create_shader_material(code: String) -> ShaderMaterial:
@@ -590,6 +588,7 @@ func create_player() -> void:
 	player.block_remove_requested.connect(remove_block)
 	player.block_interact_requested.connect(interact_with_block)
 	player.animal_attack_requested.connect(attack_animal)
+	player.consume_requested.connect(consume_meat)
 	player.backpack_requested.connect(toggle_backpack)
 	player.scaffold_check = is_player_near_scaffold
 
@@ -989,6 +988,9 @@ func create_furnace_details(parent: Node3D) -> void:
 
 
 func place_block(hit_position: Vector3) -> void:
+	if selected_material >= 14:
+		show_message("肉不能作为方块放置")
+		return
 	var grid_position := Vector3i(
 		roundi(hit_position.x),
 		roundi(hit_position.y),
@@ -1001,7 +1003,7 @@ func place_block(hit_position: Vector3) -> void:
 		show_message("门上方需要留出一格空间")
 		return
 	if inventory[selected_material] <= 0:
-		show_message("材料不足，按 B 购买 10 个")
+		show_message("背包里没有这种材料")
 		return
 	var player_grid := Vector3i(roundi(player.position.x), roundi(player.position.y), roundi(player.position.z))
 	if grid_position.x == player_grid.x and grid_position.z == player_grid.z and grid_position.y in [player_grid.y, player_grid.y + 1]:
@@ -1047,10 +1049,33 @@ func remove_block(collider: Node) -> void:
 			occupied.erase(cell)
 	else:
 		occupied.erase(grid_position)
-	if material_index != 6 or collider.get_meta("water_source", false):
-		inventory[material_index] += 1
+	create_item_drop(material_index, 1, Vector3(grid_position) + Vector3.UP * 0.35)
 	collider.queue_free()
 	update_ui()
+
+
+func create_item_drop(item_index: int, amount: int, drop_position: Vector3) -> void:
+	var item_drop := ItemDropScript.new()
+	item_drop.setup(item_index, amount, block_materials[item_index])
+	add_child(item_drop)
+	item_drop.global_position = drop_position
+
+
+func update_item_drops(delta: float) -> void:
+	var pickup_target := player.global_position + Vector3.UP * 0.65
+	for item_drop: Node in get_tree().get_nodes_in_group("item_drops"):
+		if not is_instance_valid(item_drop) or not bool(item_drop.call("can_be_collected")):
+			continue
+		if item_drop.global_position.distance_to(pickup_target) > 2.8 and not bool(item_drop.get("being_collected")):
+			continue
+		item_drop.call("attract_to", pickup_target, delta)
+		if item_drop.global_position.distance_to(pickup_target) <= 0.55:
+			var item_index: int = int(item_drop.get("item_index"))
+			var amount: int = int(item_drop.get("amount"))
+			inventory[item_index] += amount
+			show_message("拾取%s ×%d" % [MATERIAL_NAMES[item_index], amount])
+			item_drop.queue_free()
+			update_ui()
 
 
 func update_mining(delta: float) -> void:
@@ -1349,136 +1374,6 @@ func interact_with_block(collider: Node) -> void:
 	tween.tween_property(collider, "rotation:y", target_yaw, 0.22)
 
 
-func generate_customer_order() -> void:
-	var names := ["艾米", "林先生", "米娅", "诺亚", "苏珊", "阿乐", "安娜", "陈太太"]
-	customer_name = names.pick_random()
-	var level := mini(completed_orders + 1, 6)
-	var desired := [
-		randi_range(6 + level * 2, 10 + level * 3),
-		randi_range(10 + level * 2, 16 + level * 4),
-		randi_range(2, 3 + level),
-		randi_range(1, 1 + mini(floori(level / 3.0), 1)),
-	]
-
-	# 先为门和玻璃预留购买能力，再分配基础建材，避免生成无解订单。
-	var budget_left := money
-	for index in [3, 2, 1, 0]:
-		var required: int = desired[index]
-		var missing := maxi(required - inventory[index], 0)
-		var packs_needed := ceili(float(missing) / 10.0)
-		var pack_cost: int = packs_needed * MATERIAL_COSTS[index] * 10
-		if pack_cost <= budget_left:
-			budget_left -= pack_cost
-		else:
-			var affordable_packs: int = budget_left / (MATERIAL_COSTS[index] * 10)
-			required = inventory[index] + affordable_packs * 10
-			budget_left -= affordable_packs * MATERIAL_COSTS[index] * 10
-		order_requirements[index] = required
-
-	order_width = randi_range(4, mini(4 + floori(level / 2.0), 6))
-	order_depth = randi_range(4, mini(4 + floori(level / 2.0), 6))
-	var material_value := 0
-	for index in order_requirements.size():
-		material_value += order_requirements[index] * MATERIAL_COSTS[index]
-	var total_required := 0
-	for amount in order_requirements:
-		total_required += amount
-	order_reward = roundi(105.0 + material_value * 1.05 + order_width * order_depth * 2.5 + level * 10.0)
-	# 千元订单只为未来真正的大型豪宅保留；普通订单不会触发。
-	if order_width * order_depth >= 64 and total_required >= 100:
-		order_reward += 700
-	update_order_ui()
-
-
-func update_order_ui() -> void:
-	if not order_label:
-		return
-	order_label.text = "顾客订单  ·  %s\n\n想要一栋至少 %d×%d、高两格的房子\n\n石头 ≥ %d    木头 ≥ %d\n玻璃 ≥ %d    木门 ≥ %d\n\n出售报酬：$%d\n完成建造后按 F 验收" % [
-		customer_name,
-		order_width,
-		order_depth,
-		order_requirements[0],
-		order_requirements[1],
-		order_requirements[2],
-		order_requirements[3],
-		order_reward,
-	]
-
-
-func submit_customer_order() -> void:
-	var stats := get_build_stats()
-	var missing: Array[String] = []
-	var counts: Array = stats.counts
-	for index in order_requirements.size():
-		if counts[index] < order_requirements[index]:
-			missing.append("%s还差%d" % [MATERIAL_NAMES[index], order_requirements[index] - counts[index]])
-	var width: int = stats.width
-	var depth: int = stats.depth
-	var footprint_ok := (width >= order_width and depth >= order_depth) or (width >= order_depth and depth >= order_width)
-	if not footprint_ok:
-		missing.append("占地需达到%d×%d" % [order_width, order_depth])
-	if stats.height < 2:
-		missing.append("房屋高度至少两格")
-
-	if not missing.is_empty():
-		show_message("验收未通过：" + "；".join(missing))
-		return
-
-	var earned := order_reward
-	money += earned
-	completed_orders += 1
-	clear_sold_house()
-	generate_customer_order()
-	update_ui()
-	show_message("成交！顾客支付了 $%d，新订单已经送达" % earned)
-
-
-func get_build_stats() -> Dictionary:
-	var counts := [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-	var seen: Dictionary = {}
-	var cells: Array[Vector3i] = []
-	for block: Node in occupied.values():
-		var instance_id := block.get_instance_id()
-		if seen.has(instance_id):
-			continue
-		seen[instance_id] = true
-		var material_index: int = block.get_meta("material_index")
-		counts[material_index] += 1
-		# 施工工具和景观装饰不计入顾客要求的房屋尺寸。
-		if material_index in [4, 5, 6, 8, 9, 10]:
-			continue
-		if block.has_meta("occupied_cells"):
-			for cell: Vector3i in block.get_meta("occupied_cells"):
-				cells.append(cell)
-		else:
-			cells.append(block.get_meta("grid_position"))
-
-	if cells.is_empty():
-		return {"counts": counts, "width": 0, "depth": 0, "height": 0}
-	var min_cell := cells[0]
-	var max_cell := cells[0]
-	for cell in cells:
-		min_cell = Vector3i(mini(min_cell.x, cell.x), mini(min_cell.y, cell.y), mini(min_cell.z, cell.z))
-		max_cell = Vector3i(maxi(max_cell.x, cell.x), maxi(max_cell.y, cell.y), maxi(max_cell.z, cell.z))
-	return {
-		"counts": counts,
-		"width": max_cell.x - min_cell.x + 1,
-		"depth": max_cell.z - min_cell.z + 1,
-		"height": max_cell.y - min_cell.y + 1,
-	}
-
-
-func clear_sold_house() -> void:
-	var seen: Dictionary = {}
-	for block: Node in occupied.values():
-		var instance_id := block.get_instance_id()
-		if not seen.has(instance_id):
-			seen[instance_id] = true
-			block.queue_free()
-	occupied.clear()
-	water_flow_queue.clear()
-
-
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.pressed or event.echo:
 		return
@@ -1486,23 +1381,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9:
 			selected_hotbar_slot = int(event.physical_keycode - KEY_1)
 			selected_material = hotbar_slot_materials[selected_hotbar_slot]
+			player.holding_consumable = selected_material == 14
 			update_ui()
 			show_selected_material()
 			if selected_material == 4:
 				show_message("脚手架：靠近后按住空格向上攀爬")
-		KEY_B:
-			buy_selected_material()
-
-
-func buy_selected_material() -> void:
-	var cost: int = MATERIAL_COSTS[selected_material] * 10
-	if money < cost:
-		show_message("资金不足，需要 $%d" % cost)
-		return
-	money -= cost
-	inventory[selected_material] += 10
-	show_message("购买了 10 个%s" % MATERIAL_NAMES[selected_material])
-	update_ui()
 
 
 func toggle_backpack() -> void:
@@ -1524,11 +1407,25 @@ func select_backpack_material(slot_index: int) -> void:
 		return
 	hotbar_slot_materials[selected_hotbar_slot] = material_index
 	selected_material = material_index
+	player.holding_consumable = selected_material == 14
 	refresh_hotbar_preview(selected_hotbar_slot)
 	update_ui()
 	show_selected_material()
 	show_message("已将%s放入快捷栏第%d格" % [MATERIAL_NAMES[material_index], selected_hotbar_slot + 1])
 	toggle_backpack()
+
+
+func consume_meat() -> void:
+	if selected_material != 14 or inventory[14] <= 0:
+		show_message("手上没有肉")
+		return
+	if player_hunger >= 19.99:
+		show_message("现在还不饿")
+		return
+	inventory[14] -= 1
+	player_hunger = minf(20.0, player_hunger + 6.0)
+	show_message("吃下肉，恢复了饥饿值")
+	update_ui()
 
 
 func craft_recipe(recipe_index: int) -> void:
@@ -1608,7 +1505,7 @@ func create_ui() -> void:
 
 	var help := Label.new()
 	help.position = Vector2(24, 58)
-	help.text = "右键放置 / 左键挖掘或攻击  ·  E背包  ·  背包点击物品装入当前快捷栏格  ·  1–9切换"
+	help.text = "右键放置或吃肉 / 左键挖掘或攻击  ·  E背包  ·  点击物品装入快捷栏  ·  1–9切换"
 	help.add_theme_font_size_override("font_size", 16)
 	help.add_theme_color_override("font_color", Color("#243342"))
 	layer.add_child(help)
@@ -1819,6 +1716,8 @@ func create_material_preview(material_index: int) -> SubViewport:
 				add_scaffold_beam(root, Vector3(0.80, 0.065, 0.065), Vector3(0, y, z_sign * 0.40))
 			for x_sign in [-1.0, 1.0]:
 				add_scaffold_beam(root, Vector3(0.065, 0.065, 0.80), Vector3(x_sign * 0.40, y, 0))
+	elif material_index == 14:
+		add_preview_box(root, Vector3(0.82, 0.38, 0.58), Vector3.ZERO, block_materials[14])
 	else:
 		var preview_size := Vector3.ONE * (0.84 if material_index == 8 else 0.92)
 		add_preview_box(root, preview_size, Vector3.ZERO, block_materials[material_index])
@@ -1875,7 +1774,7 @@ func refresh_hotbar_preview(slot_index: int) -> void:
 
 
 func update_ui() -> void:
-	info_label.text = "资金  $%d    肉  ×%d" % [money, meat_count]
+	info_label.text = "生命  %d / 20    饥饿  %d / 20" % [ceili(player_health), ceili(player_hunger)]
 	for index in hotbar_labels.size():
 		var material_index := hotbar_slot_materials[index]
 		hotbar_labels[index].text = str(inventory[material_index])
@@ -1897,7 +1796,7 @@ func update_ui() -> void:
 
 
 func show_selected_material() -> void:
-	selection_label.text = "%d  %s  ·  单价 $%d" % [selected_hotbar_slot + 1, MATERIAL_NAMES[selected_material], MATERIAL_COSTS[selected_material]]
+	selection_label.text = "%d  %s" % [selected_hotbar_slot + 1, MATERIAL_NAMES[selected_material]]
 	selection_label.modulate.a = 1.0
 	selection_timer = 1.8
 
@@ -1907,8 +1806,31 @@ func show_message(text: String) -> void:
 	message_timer = 2.2
 
 
+func update_survival(delta: float) -> void:
+	# 满饥饿约十分钟耗尽；归零后每三秒受到一点饥饿伤害。
+	player_hunger = maxf(0.0, player_hunger - delta / 30.0)
+	if player_hunger <= 0.0:
+		starvation_damage_timer -= delta
+		if starvation_damage_timer <= 0.0:
+			starvation_damage_timer = 3.0
+			player_health = maxf(0.0, player_health - 1.0)
+			show_message("太饿了：生命减少 1 点")
+	else:
+		starvation_damage_timer = 3.0
+	if player_health <= 0.0:
+		player_health = 20.0
+		player_hunger = 10.0
+		player.position = Vector3(0, 2, 6)
+		player.velocity = Vector3.ZERO
+		show_message("生命耗尽，已回到出生点")
+	if info_label:
+		info_label.text = "生命  %d / 20    饥饿  %d / 20" % [ceili(player_health), ceili(player_hunger)]
+
+
 func _process(delta: float) -> void:
 	update_mining(delta)
+	update_item_drops(delta)
+	update_survival(delta)
 	apply_water_and_player_pushes()
 	var player_ground_cell := Vector3i(roundi(player.position.x), 0, roundi(player.position.z))
 	if maxi(absi(player_ground_cell.x - last_ground_center.x), absi(player_ground_cell.z - last_ground_center.z)) >= 7:

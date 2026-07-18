@@ -4,6 +4,7 @@ signal block_place_requested(position: Vector3)
 signal block_remove_requested(block: Node)
 signal block_interact_requested(block: Node)
 signal animal_attack_requested(animal: Node)
+signal consume_requested
 signal backpack_requested
 
 const SPEED := 7.0
@@ -19,6 +20,7 @@ var body_collision: CollisionShape3D
 var external_push := Vector3.ZERO
 var in_water := false
 var input_locked := false
+var holding_consumable := false
 
 
 func _ready() -> void:
@@ -67,6 +69,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT and holding_consumable:
+			consume_requested.emit()
 			return
 		if not ray.is_colliding():
 			return

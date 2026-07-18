@@ -1,6 +1,6 @@
 extends CharacterBody3D
 
-signal died(species: String)
+signal died(species: String, drop_position: Vector3)
 
 var species := "cow"
 var health := 10
@@ -38,7 +38,7 @@ func take_damage(amount: int, knockback: Vector3) -> int:
 	var tween := create_tween()
 	tween.tween_property(visual_root, "scale", Vector3.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	if health <= 0:
-		died.emit(species)
+		died.emit(species, global_position + Vector3.UP * 0.35)
 		queue_free()
 	return health
 
