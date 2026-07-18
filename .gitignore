@@ -1,0 +1,24 @@
+# Godot 4 generated cache
+.godot/
+
+# Platform export/build output
+/android/
+/build/
+/dist/
+/exports/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+
+# Editors and local tooling
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Runtime and temporary files
+*.log
+*.tmp
+*.temp
