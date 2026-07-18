@@ -417,38 +417,32 @@ void fragment() {
 	block_materials.append(create_shader_material("""
 shader_type spatial;
 varying vec3 local_normal;
-float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 void vertex() { local_normal = NORMAL; }
 void fragment() {
-	// 原创的深灰石砌炉体：错缝石砖、厚炉框和带余烬的炉膛。
-	vec2 masonry_uv = vec2(UV.x * 4.0, UV.y * 4.0);
-	float row = floor(masonry_uv.y);
-	masonry_uv.x += mod(row, 2.0) * 0.5;
-	vec2 stone_id = floor(masonry_uv);
-	vec2 cell = fract(masonry_uv);
-	float edge = min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y));
-	float joint = 1.0 - smoothstep(0.035, 0.075, edge);
-	float variation = (hash(stone_id) - 0.5) * 0.12;
-	vec3 stone = vec3(0.31, 0.32, 0.33) + vec3(variation, variation * 0.92, variation * 0.80);
-	stone = mix(stone, vec3(0.115, 0.12, 0.125), joint * 0.88);
+	// 简化的经典方块熔炉：纯灰炉体，不使用裂缝、砖缝或细碎噪点。
+	vec3 stone = vec3(0.40, 0.41, 0.42);
+	if (local_normal.y > 0.55) {
+		stone = vec3(0.46, 0.47, 0.48);
+	} else if (abs(local_normal.x) > 0.55) {
+		stone = vec3(0.36, 0.37, 0.38);
+	}
 
 	if (local_normal.z > 0.55) {
-		vec2 p = UV - vec2(0.5, 0.43);
-		vec2 outer = abs(p / vec2(0.34, 0.29));
-		vec2 inner = abs(p / vec2(0.255, 0.195));
-		float outer_mask = 1.0 - smoothstep(0.96, 1.0, max(outer.x, outer.y));
-		float inner_mask = 1.0 - smoothstep(0.94, 1.0, max(inner.x, inner.y));
+		// 正面只保留宽灰边框和方形黑炉口，造型醒目但纹理更简洁。
+		vec2 outer = step(vec2(0.16, 0.15), UV) * step(UV, vec2(0.84, 0.66));
+		vec2 inner = step(vec2(0.24, 0.23), UV) * step(UV, vec2(0.76, 0.57));
+		float outer_mask = outer.x * outer.y;
+		float inner_mask = inner.x * inner.y;
 		float rim = clamp(outer_mask - inner_mask, 0.0, 1.0);
-		stone = mix(stone, vec3(0.16, 0.17, 0.18), rim);
-		stone = mix(stone, vec3(0.025, 0.029, 0.032), inner_mask);
-		float ember_line = inner_mask * smoothstep(0.27, 0.34, UV.y) * (1.0 - smoothstep(0.37, 0.43, UV.y));
-		float ember_breaks = 0.50 + 0.50 * sin(UV.x * 47.0);
-		vec3 ember = mix(vec3(0.72, 0.18, 0.035), vec3(1.0, 0.64, 0.12), ember_breaks);
-		stone = mix(stone, ember, ember_line * 0.82);
-		EMISSION = ember * ember_line * 0.38;
+		stone = mix(stone, vec3(0.25, 0.26, 0.27), rim);
+		stone = mix(stone, vec3(0.055, 0.060, 0.065), inner_mask);
+
+		// 炉口上沿增加一条宽而平整的深灰压条，不画裂纹。
+		vec2 lintel = step(vec2(0.20, 0.72), UV) * step(UV, vec2(0.80, 0.80));
+		stone = mix(stone, vec3(0.28, 0.29, 0.30), lintel.x * lintel.y);
 	}
 	ALBEDO = stone;
-	ROUGHNESS = 0.96;
+	ROUGHNESS = 0.92;
 }
 """))
 	block_materials.append(create_shader_material("""
