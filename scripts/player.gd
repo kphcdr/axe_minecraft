@@ -3,6 +3,7 @@ extends CharacterBody3D
 signal block_place_requested(position: Vector3)
 signal block_remove_requested(block: Node)
 signal block_interact_requested(block: Node)
+signal animal_attack_requested(animal: Node)
 signal backpack_requested
 
 const SPEED := 7.0
@@ -70,7 +71,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not ray.is_colliding():
 			return
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			# 挖掘由主场景按住左键持续处理，这里不再瞬间拆除。
+			var collider := ray.get_collider()
+			if is_instance_valid(collider) and collider.is_in_group("animals"):
+				animal_attack_requested.emit(collider)
+			# 方块挖掘仍由主场景的按住进度处理。
 			return
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			var collider := ray.get_collider()

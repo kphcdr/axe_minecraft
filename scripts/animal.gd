@@ -1,6 +1,9 @@
 extends CharacterBody3D
 
+signal died(species: String)
+
 var species := "cow"
+var health := 10
 var home_position := Vector3.ZERO
 var move_direction := Vector3.ZERO
 var decision_timer := 0.0
@@ -26,6 +29,18 @@ func _ready() -> void:
 	add_child(visual_root)
 	build_model()
 	choose_new_action()
+
+
+func take_damage(amount: int, knockback: Vector3) -> int:
+	health = maxi(health - amount, 0)
+	apply_push(knockback)
+	visual_root.scale = Vector3(1.08, 0.90, 1.08)
+	var tween := create_tween()
+	tween.tween_property(visual_root, "scale", Vector3.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	if health <= 0:
+		died.emit(species)
+		queue_free()
+	return health
 
 
 func build_model() -> void:

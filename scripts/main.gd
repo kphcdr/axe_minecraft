@@ -25,6 +25,7 @@ var selected_material := 0
 var selected_hotbar_slot := 0
 var hotbar_slot_materials: Array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 var money := 300
+var meat_count := 0
 var inventory := [30, 30, 20, 5, 20, 20, 10, 20, 5, 0, 0, 0, 0, 0]
 var occupied: Dictionary = {}
 var info_label: Label
@@ -61,6 +62,7 @@ var generated_region_centers: Array[Vector3] = [Vector3.ZERO]
 var generated_water_centers: Array[Vector3] = []
 var generated_ground_cells: Dictionary = {}
 var last_ground_center := Vector3i.ZERO
+var terrain_generation_queue: Array[Dictionary] = []
 var backpack_panel: PanelContainer
 var backpack_buttons: Array[Button] = []
 var backpack_count_labels: Array = []
@@ -181,6 +183,9 @@ func create_animals() -> void:
 
 
 func spawn_animals_out_of_view() -> void:
+	const MAX_ANIMALS := 40
+	if get_tree().get_nodes_in_group("animals").size() >= MAX_ANIMALS:
+		return
 	var camera_forward: Vector3 = -player.camera.global_transform.basis.z
 	camera_forward.y = 0
 	if camera_forward.length_squared() < 0.01:
@@ -190,22 +195,51 @@ func spawn_animals_out_of_view() -> void:
 	var behind: Vector3 = -camera_forward
 	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken"]
 	for animal_species in species_list:
+		if get_tree().get_nodes_in_group("animals").size() >= MAX_ANIMALS:
+			break
 		var spawn_position := Vector3.ZERO
+		var found_ground := false
 		for attempt in range(20):
 			var direction: Vector3 = behind.rotated(Vector3.UP, randf_range(-1.20, 1.20))
-			var distance := randf_range(30.0, 95.0)
+			var distance := randf_range(18.0, 25.0)
 			spawn_position = player.global_position + direction * distance
 			spawn_position.y = 1.5
 			var ground_cell := Vector3i(roundi(spawn_position.x), 0, roundi(spawn_position.z))
-			if not occupied.has(ground_cell):
+			if occupied.has(ground_cell) and occupied[ground_cell].get_meta("material_index", -1) in [5, 11, 12]:
+				found_ground = true
 				break
-		spawn_animal(animal_species, spawn_position)
+		if found_ground:
+			spawn_animal(animal_species, spawn_position)
 
 
 func spawn_animal(animal_species: String, spawn_position: Vector3) -> void:
 	var animal := AnimalScript.new()
 	animal.setup(animal_species, spawn_position)
+	animal.died.connect(on_animal_died)
 	add_child(animal)
+
+
+func attack_animal(animal: Node) -> void:
+	if not is_instance_valid(animal) or not animal.is_in_group("animals"):
+		return
+	var knockback: Vector3 = animal.global_position - player.global_position
+	knockback.y = 0.0
+	if knockback.length_squared() > 0.001:
+		knockback = knockback.normalized()
+	var remaining_health: int = animal.call("take_damage", 1, knockback)
+	if remaining_health > 0:
+		show_message("命中%s：生命 %d / 10" % [get_species_name(str(animal.species)), remaining_health])
+
+
+func on_animal_died(animal_species: String) -> void:
+	var meat_drop: int = {"cow": 3, "sheep": 2, "pig": 3, "chicken": 1}.get(animal_species, 1)
+	meat_count += meat_drop
+	show_message("击败%s，获得 %d 块肉" % [get_species_name(animal_species), meat_drop])
+	update_ui()
+
+
+func get_species_name(animal_species: String) -> String:
+	return {"cow": "牛", "sheep": "羊", "pig": "猪", "chicken": "鸡"}.get(animal_species, "动物")
 
 
 func apply_water_and_player_pushes() -> void:
@@ -555,33 +589,54 @@ func create_player() -> void:
 	player.block_place_requested.connect(place_block)
 	player.block_remove_requested.connect(remove_block)
 	player.block_interact_requested.connect(interact_with_block)
+	player.animal_attack_requested.connect(attack_animal)
 	player.backpack_requested.connect(toggle_backpack)
 	player.scaffold_check = is_player_near_scaffold
 
 
 func create_destructible_ground(center: Vector3i) -> void:
-	# 表层保持较大的可见范围；地下三层在表层被挖开时才生成。
-	const SURFACE_RADIUS := 32
+	# 初始地面立即生成；移动后的扩展分帧处理，避免一次创建数百个碰撞体造成卡顿。
+	const SURFACE_RADIUS := 26
+	var immediate := generated_ground_cells.is_empty()
 	last_ground_center = Vector3i(center.x, 0, center.z)
 	for x in range(center.x - SURFACE_RADIUS, center.x + SURFACE_RADIUS + 1):
 		for z in range(center.z - SURFACE_RADIUS, center.z + SURFACE_RADIUS + 1):
 			var cell := Vector3i(x, 0, z)
 			if generated_ground_cells.has(cell):
 				continue
+			if occupied.has(cell):
+				continue
 			generated_ground_cells[cell] = true
-			if not occupied.has(cell):
+			if immediate:
 				create_block(cell, 5, true)
+			else:
+				terrain_generation_queue.append({"cell": cell, "material": 5})
 
 
-func ensure_subsurface_column(surface_cell: Vector3i) -> void:
-	# 第二层是草，第三、第四层是石头。按需创建可显著减少物理碰撞体数量。
-	for y in range(-1, -4, -1):
-		var cell := Vector3i(surface_cell.x, y, surface_cell.z)
-		if generated_ground_cells.has(cell):
-			continue
-		generated_ground_cells[cell] = true
+func ensure_subsurface_area(surface_cell: Vector3i) -> void:
+	# 中心承重柱立即生成；周围 7×7 地下结构分帧补齐，既连续又不会瞬时卡顿。
+	const AREA_RADIUS := 3
+	for x_offset in range(-AREA_RADIUS, AREA_RADIUS + 1):
+		for z_offset in range(-AREA_RADIUS, AREA_RADIUS + 1):
+			for y in range(-1, -4, -1):
+				var cell := Vector3i(surface_cell.x + x_offset, y, surface_cell.z + z_offset)
+				if generated_ground_cells.has(cell) or occupied.has(cell):
+					continue
+				generated_ground_cells[cell] = true
+				var material_index := 5 if y == -1 else 0
+				if x_offset == 0 and z_offset == 0:
+					create_block(cell, material_index, true)
+				else:
+					terrain_generation_queue.append({"cell": cell, "material": material_index})
+
+
+func process_terrain_generation_queue() -> void:
+	const BLOCKS_PER_FRAME := 48
+	for index in range(mini(BLOCKS_PER_FRAME, terrain_generation_queue.size())):
+		var entry: Dictionary = terrain_generation_queue.pop_back()
+		var cell: Vector3i = entry.cell
 		if not occupied.has(cell):
-			create_block(cell, 5 if y == -1 else 0, true)
+			create_block(cell, int(entry.material), true)
 
 
 func create_bedrock_floor() -> void:
@@ -757,24 +812,51 @@ func spawn_dynamic_natural_region(center: Vector3i) -> void:
 
 
 func spawn_natural_pond(center: Vector3i) -> bool:
-	# 菱形池塘：泥土外圈、沙子内圈，中央水源负责自然扩散。
-	for x_offset in range(-5, 6):
+	# 椭圆基础上加入平缓起伏，形成连续但不规则的自然岸线。
+	var footprint: Dictionary = {}
+	var depths: Dictionary = {}
+	for x_offset in range(-6, 7):
 		for z_offset in range(-5, 6):
-			if abs(x_offset) + abs(z_offset) <= 5:
-				var check_cell := center + Vector3i(x_offset, 0, z_offset)
-				if occupied.has(check_cell):
-					return false
-	for x_offset in range(-5, 6):
-		for z_offset in range(-5, 6):
-			var distance: int = abs(x_offset) + abs(z_offset)
-			var cell := center + Vector3i(x_offset, 0, z_offset)
-			if distance == 5:
-				create_block(cell, 11, true)
-			elif distance == 4:
-				create_block(cell, 12, true)
-	var water_source := create_water(center, 0, true, 0, Vector2.ZERO, 1.0)
-	var source_id: int = water_source.get_meta("flow_source_id")
-	queue_water_spread(center, 0, source_id, Vector2.ZERO)
+			var normalized := Vector2(float(x_offset) / 5.7, float(z_offset) / 4.6)
+			var radial := normalized.length()
+			var edge_variation := sin(float(x_offset) * 1.73 + float(center.x) * 0.07) * 0.07
+			edge_variation += cos(float(z_offset) * 1.31 + float(center.z) * 0.05) * 0.06
+			if radial <= 0.92 + edge_variation:
+				var offset := Vector2i(x_offset, z_offset)
+				footprint[offset] = true
+				# 岸边一格深，中部两格深，中心局部三格深。
+				depths[offset] = 3 if radial < 0.34 else (2 if radial < 0.69 else 1)
+
+	var bank_cells: Dictionary = {}
+	for offset: Vector2i in footprint.keys():
+		for direction: Vector2i in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var bank_offset := offset + direction
+			if not footprint.has(bank_offset):
+				bank_cells[bank_offset] = true
+
+	# 不覆盖已有景观；三个初始池塘都选择在空旷区域。
+	for offset: Vector2i in footprint.keys():
+		if occupied.has(center + Vector3i(offset.x, 0, offset.y)):
+			return false
+	for offset: Vector2i in bank_cells.keys():
+		if occupied.has(center + Vector3i(offset.x, 0, offset.y)):
+			return false
+
+	# 每一列从水底一直填到黑色底层，深水和浅水之间也不会出现空洞。
+	for offset: Vector2i in footprint.keys():
+		var depth: int = depths[offset]
+		for water_level in range(0, -depth, -1):
+			create_water(center + Vector3i(offset.x, water_level, offset.y), 0, true, 0, Vector2.ZERO, 1.0)
+		for bottom_level in range(-depth, -4, -1):
+			var bottom_material := 12 if bottom_level == -depth and depth <= 2 else 0
+			create_block(center + Vector3i(offset.x, bottom_level, offset.y), bottom_material, true)
+
+	# 沙质岸边和地下侧壁完整围住水体。
+	for offset: Vector2i in bank_cells.keys():
+		for wall_level in range(0, -4, -1):
+			var wall_material := 12 if wall_level == 0 else (11 if wall_level == -1 else 0)
+			create_block(center + Vector3i(offset.x, wall_level, offset.y), wall_material, true)
+
 	generated_water_centers.append(Vector3(center))
 	return true
 
@@ -948,7 +1030,10 @@ func remove_block(collider: Node) -> void:
 		show_message("黑色底层无法挖掘")
 		return
 	var material_index: int = collider.get_meta("material_index")
-	if material_index == 6 and collider.get_meta("water_source", false):
+	if material_index == 6:
+		if float(collider.get_meta("water_amount", 0.0)) < 0.995:
+			show_message("水位不足一格，无法汲取")
+			return
 		inventory[material_index] += 1
 		remove_water_network(collider.get_meta("flow_source_id"))
 		update_ui()
@@ -956,7 +1041,7 @@ func remove_block(collider: Node) -> void:
 	var grid_position: Vector3i = collider.get_meta("grid_position")
 	if grid_position.y == 0 and generated_ground_cells.has(grid_position):
 		# 先生成下方实体碰撞，再移除表层，杜绝一帧内掉进尚未加载的地下。
-		ensure_subsurface_column(grid_position)
+		ensure_subsurface_area(grid_position)
 	if collider.has_meta("occupied_cells"):
 		for cell: Vector3i in collider.get_meta("occupied_cells"):
 			occupied.erase(cell)
@@ -1523,7 +1608,7 @@ func create_ui() -> void:
 
 	var help := Label.new()
 	help.position = Vector2(24, 58)
-	help.text = "右键放置 / 左键拆除 / 右键开门  ·  E背包  ·  背包点击物品装入当前快捷栏格  ·  1–9切换"
+	help.text = "右键放置 / 左键挖掘或攻击  ·  E背包  ·  背包点击物品装入当前快捷栏格  ·  1–9切换"
 	help.add_theme_font_size_override("font_size", 16)
 	help.add_theme_color_override("font_color", Color("#243342"))
 	layer.add_child(help)
@@ -1790,7 +1875,7 @@ func refresh_hotbar_preview(slot_index: int) -> void:
 
 
 func update_ui() -> void:
-	info_label.text = "资金  $%d" % money
+	info_label.text = "资金  $%d    肉  ×%d" % [money, meat_count]
 	for index in hotbar_labels.size():
 		var material_index := hotbar_slot_materials[index]
 		hotbar_labels[index].text = str(inventory[material_index])
@@ -1808,6 +1893,7 @@ func update_ui() -> void:
 		if material_index >= 0 and backpack_count_labels[slot_index] != null:
 			backpack_count_labels[slot_index].text = str(inventory[material_index])
 			backpack_buttons[slot_index].button_pressed = material_index == selected_material
+			backpack_buttons[slot_index].visible = inventory[material_index] > 0
 
 
 func show_selected_material() -> void:
@@ -1825,8 +1911,9 @@ func _process(delta: float) -> void:
 	update_mining(delta)
 	apply_water_and_player_pushes()
 	var player_ground_cell := Vector3i(roundi(player.position.x), 0, roundi(player.position.z))
-	if maxi(absi(player_ground_cell.x - last_ground_center.x), absi(player_ground_cell.z - last_ground_center.z)) >= 8:
+	if maxi(absi(player_ground_cell.x - last_ground_center.x), absi(player_ground_cell.z - last_ground_center.z)) >= 7:
 		create_destructible_ground(player_ground_cell)
+	process_terrain_generation_queue()
 	if furnace_active:
 		furnace_timer -= delta
 		if furnace_timer <= 0.0:
