@@ -100,9 +100,16 @@ func _physics_process(delta: float) -> void:
 	var climbing: bool = not input_locked and scaffold_check.is_valid() and bool(scaffold_check.call(global_position)) and Input.is_action_pressed("jump")
 	if climbing:
 		velocity.y = 3.2
+	elif in_water:
+		if not input_locked and Input.is_action_pressed("jump"):
+			# 长按空格持续向水面游，速度平滑增加，避免像陆地跳跃一样突然弹起。
+			velocity.y = move_toward(velocity.y, 2.65, delta * 8.5)
+		else:
+			# 水中松开空格后只会缓慢下沉。
+			velocity.y = move_toward(velocity.y, -0.42, delta * 3.2)
 	elif not is_on_floor():
 		velocity += get_gravity() * delta
-	if not input_locked and not climbing and Input.is_action_just_pressed("jump") and is_on_floor():
+	if not input_locked and not climbing and not in_water and Input.is_action_just_pressed("jump") and is_on_floor():
 		velocity.y = JUMP_VELOCITY
 
 	var input := Vector2.ZERO if input_locked else Input.get_vector("move_left", "move_right", "move_forward", "move_back")

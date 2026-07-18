@@ -1498,9 +1498,14 @@ func create_ui() -> void:
 	add_child(layer)
 
 	info_label = Label.new()
-	info_label.position = Vector2(24, 20)
-	info_label.add_theme_font_size_override("font_size", 22)
-	info_label.add_theme_color_override("font_color", Color("#16202a"))
+	info_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	info_label.position = Vector2(-210, -116)
+	info_label.size = Vector2(420, 32)
+	info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	info_label.add_theme_font_size_override("font_size", 20)
+	info_label.add_theme_color_override("font_color", Color("#fff3d2"))
+	info_label.add_theme_constant_override("outline_size", 5)
+	info_label.add_theme_color_override("font_outline_color", Color("#15191d"))
 	layer.add_child(info_label)
 
 	var help := Label.new()
@@ -1565,7 +1570,7 @@ func create_ui() -> void:
 
 	selection_label = Label.new()
 	selection_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	selection_label.position = Vector2(-150, -116)
+	selection_label.position = Vector2(-150, -151)
 	selection_label.size = Vector2(300, 34)
 	selection_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	selection_label.add_theme_font_size_override("font_size", 20)
