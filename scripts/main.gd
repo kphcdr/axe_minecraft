@@ -560,9 +560,8 @@ func create_player() -> void:
 
 
 func create_destructible_ground(center: Vector3i) -> void:
-	# 表层保持较大的可见范围，地下层只在玩家附近生成，避免大量不可见节点拖慢游戏。
+	# 表层保持较大的可见范围；地下三层在表层被挖开时才生成。
 	const SURFACE_RADIUS := 32
-	const UNDERGROUND_RADIUS := 12
 	last_ground_center = Vector3i(center.x, 0, center.z)
 	for x in range(center.x - SURFACE_RADIUS, center.x + SURFACE_RADIUS + 1):
 		for z in range(center.z - SURFACE_RADIUS, center.z + SURFACE_RADIUS + 1):
@@ -572,16 +571,17 @@ func create_destructible_ground(center: Vector3i) -> void:
 			generated_ground_cells[cell] = true
 			if not occupied.has(cell):
 				create_block(cell, 5, true)
-	# 第二层仍是草方块，第三、第四层改为石头；挖掉后都不会重新生成。
-	for x in range(center.x - UNDERGROUND_RADIUS, center.x + UNDERGROUND_RADIUS + 1):
-		for z in range(center.z - UNDERGROUND_RADIUS, center.z + UNDERGROUND_RADIUS + 1):
-			for y in range(-1, -4, -1):
-				var cell := Vector3i(x, y, z)
-				if generated_ground_cells.has(cell):
-					continue
-				generated_ground_cells[cell] = true
-				if not occupied.has(cell):
-					create_block(cell, 5 if y == -1 else 0, true)
+
+
+func ensure_subsurface_column(surface_cell: Vector3i) -> void:
+	# 第二层是草，第三、第四层是石头。按需创建可显著减少物理碰撞体数量。
+	for y in range(-1, -4, -1):
+		var cell := Vector3i(surface_cell.x, y, surface_cell.z)
+		if generated_ground_cells.has(cell):
+			continue
+		generated_ground_cells[cell] = true
+		if not occupied.has(cell):
+			create_block(cell, 5 if y == -1 else 0, true)
 
 
 func create_bedrock_floor() -> void:
@@ -953,11 +953,14 @@ func remove_block(collider: Node) -> void:
 		remove_water_network(collider.get_meta("flow_source_id"))
 		update_ui()
 		return
+	var grid_position: Vector3i = collider.get_meta("grid_position")
+	if grid_position.y == 0 and generated_ground_cells.has(grid_position):
+		# 先生成下方实体碰撞，再移除表层，杜绝一帧内掉进尚未加载的地下。
+		ensure_subsurface_column(grid_position)
 	if collider.has_meta("occupied_cells"):
 		for cell: Vector3i in collider.get_meta("occupied_cells"):
 			occupied.erase(cell)
 	else:
-		var grid_position: Vector3i = collider.get_meta("grid_position")
 		occupied.erase(grid_position)
 	if material_index != 6 or collider.get_meta("water_source", false):
 		inventory[material_index] += 1
