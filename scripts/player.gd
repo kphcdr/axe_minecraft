@@ -83,7 +83,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			var collider := ray.get_collider()
-			if is_instance_valid(collider) and (collider.get_meta("is_door", false) or collider.get_meta("is_furnace", false)) and not Input.is_action_pressed("sneak"):
+			if is_instance_valid(collider) and (collider.get_meta("is_door", false) or collider.get_meta("is_furnace", false) or collider.get_meta("is_bed", false)) and not Input.is_action_pressed("sneak"):
 				block_interact_requested.emit(collider)
 				return
 			var point := ray.get_collision_point() + ray.get_collision_normal() * 0.5

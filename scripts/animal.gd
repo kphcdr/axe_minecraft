@@ -13,6 +13,7 @@ var visual_root: Node3D
 var walking_leg_parts: Array[Node3D] = []
 var walk_phase := 0.0
 var external_push := Vector3.ZERO
+var chase_target: Node3D
 
 
 func setup(animal_species: String, spawn_position: Vector3) -> void:
@@ -41,6 +42,10 @@ func take_damage(amount: int, knockback: Vector3) -> int:
 		died.emit(species, global_position + Vector3.UP * 0.35)
 		queue_free()
 	return health
+
+
+func set_chase_target(target: Node3D) -> void:
+	chase_target = target
 
 
 func build_model() -> void:
@@ -119,6 +124,48 @@ func build_model() -> void:
 				foot.set_meta("walk_side", x_sign)
 				walking_leg_parts.append(leg)
 				walking_leg_parts.append(foot)
+		"rabbit":
+			body_height = 0.65
+			move_speed = 1.55
+			collision_size = Vector3(0.55, 0.65, 0.70)
+			add_box(Vector3(0.52, 0.42, 0.68), Vector3(0, 0.36, 0.04), Color("#a57b5d"))
+			add_box(Vector3(0.43, 0.42, 0.40), Vector3(0, 0.57, -0.42), Color("#b98b68"))
+			add_box(Vector3(0.13, 0.44, 0.13), Vector3(-0.13, 0.94, -0.40), Color("#b98b68"))
+			add_box(Vector3(0.13, 0.44, 0.13), Vector3(0.13, 0.94, -0.40), Color("#b98b68"))
+			add_box(Vector3(0.18, 0.18, 0.18), Vector3(0, 0.42, 0.43), Color("#eee5d8"))
+			add_face_eyes(0.13, 0.65, -0.625, 0.065)
+			add_legs(Color("#8c654c"), 0.19, 0.23, 0.20, 0.10)
+		"duck":
+			body_height = 0.78
+			move_speed = 1.18
+			collision_size = Vector3(0.52, 0.78, 0.62)
+			add_box(Vector3(0.58, 0.44, 0.72), Vector3(0, 0.43, 0.05), Color("#8e6841"))
+			add_box(Vector3(0.43, 0.42, 0.40), Vector3(0, 0.73, -0.43), Color("#376852"))
+			add_box(Vector3(0.38, 0.12, 0.30), Vector3(0, 0.65, -0.76), Color("#e6a43c"))
+			add_box(Vector3(0.10, 0.28, 0.45), Vector3(-0.34, 0.46, 0.06), Color("#755333"))
+			add_box(Vector3(0.10, 0.28, 0.45), Vector3(0.34, 0.46, 0.06), Color("#755333"))
+			add_face_eyes(0.12, 0.82, -0.635, 0.060)
+			for x_sign in [-1.0, 1.0]:
+				var leg := add_box(Vector3(0.07, 0.25, 0.07), Vector3(x_sign * 0.13, 0.125, 0.05), Color("#d98e2f"))
+				var foot := add_box(Vector3(0.15, 0.045, 0.22), Vector3(x_sign * 0.13, 0.025, -0.02), Color("#e5a13a"))
+				leg.set_meta("walk_side", x_sign)
+				foot.set_meta("walk_side", x_sign)
+				walking_leg_parts.append(leg)
+				walking_leg_parts.append(foot)
+		"monster":
+			body_height = 1.55
+			move_speed = 1.65
+			collision_size = Vector3(0.72, 1.55, 0.68)
+			add_box(Vector3(0.68, 0.78, 0.48), Vector3(0, 0.80, 0), Color("#29233c"))
+			add_box(Vector3(0.64, 0.56, 0.54), Vector3(0, 1.36, -0.06), Color("#35294e"))
+			add_box(Vector3(0.16, 0.14, 0.035), Vector3(-0.17, 1.44, -0.345), Color("#8ed8ff"))
+			add_box(Vector3(0.16, 0.14, 0.035), Vector3(0.17, 1.44, -0.345), Color("#8ed8ff"))
+			add_box(Vector3(0.16, 0.72, 0.18), Vector3(-0.46, 0.84, -0.02), Color("#231d34"))
+			add_box(Vector3(0.16, 0.72, 0.18), Vector3(0.46, 0.84, -0.02), Color("#231d34"))
+			for x_sign in [-1.0, 1.0]:
+				var leg := add_box(Vector3(0.22, 0.55, 0.24), Vector3(x_sign * 0.20, 0.275, 0.02), Color("#211c31"))
+				leg.set_meta("walk_side", x_sign)
+				walking_leg_parts.append(leg)
 
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
@@ -173,7 +220,10 @@ func _physics_process(delta: float) -> void:
 	decision_timer -= delta
 	if decision_timer <= 0.0:
 		choose_new_action()
-	if global_position.distance_to(home_position) > 22.0:
+	if species == "monster" and is_instance_valid(chase_target) and global_position.distance_to(chase_target.global_position) < 18.0:
+		move_direction = (chase_target.global_position - global_position) * Vector3(1, 0, 1)
+		move_direction = move_direction.normalized()
+	elif global_position.distance_to(home_position) > 22.0:
 		move_direction = (home_position - global_position) * Vector3(1, 0, 1)
 		move_direction = move_direction.normalized()
 	if not is_on_floor():
@@ -195,9 +245,9 @@ func apply_push(force: Vector3) -> void:
 
 func animate_walk(delta: float) -> void:
 	var is_walking := move_direction.length_squared() > 0.01 and is_on_floor()
-	var frequency := 10.0 if species == "chicken" else (7.5 if species == "pig" else 6.2)
-	var swing := 0.48 if species == "chicken" else (0.34 if species == "pig" else 0.30)
-	var bob_amount := 0.018 if species == "chicken" else (0.025 if species == "pig" else 0.032)
+	var frequency := 11.5 if species == "rabbit" else (10.0 if species == "chicken" else (8.5 if species == "duck" else (7.5 if species == "pig" else 6.2)))
+	var swing := 0.52 if species in ["chicken", "rabbit"] else (0.40 if species in ["duck", "monster"] else (0.34 if species == "pig" else 0.30))
+	var bob_amount := 0.040 if species == "rabbit" else (0.018 if species == "chicken" else (0.024 if species == "duck" else (0.025 if species == "pig" else 0.032)))
 	if is_walking:
 		walk_phase += delta * frequency
 		visual_root.position.y = abs(sin(walk_phase * 2.0)) * bob_amount

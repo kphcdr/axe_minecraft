@@ -3,7 +3,7 @@ extends Node3D
 const PlayerScript := preload("res://scripts/player.gd")
 const AnimalScript := preload("res://scripts/animal.gd")
 const ItemDropScript := preload("res://scripts/item_drop.gd")
-const MATERIAL_NAMES := ["石头", "木头", "玻璃", "木门", "脚手架", "草地", "水", "红砖", "灯块", "树叶", "原木", "泥土", "沙子", "熔炉", "肉"]
+const MATERIAL_NAMES := ["石头", "木头", "玻璃", "木门", "脚手架", "草地", "水", "红砖", "灯块", "树叶", "原木", "泥土", "沙子", "熔炉", "肉", "床"]
 const MATERIAL_COLORS := [
 	Color("#71757c"),
 	Color("#a66b3f"),
@@ -20,15 +20,21 @@ const MATERIAL_COLORS := [
 	Color("#d9c487"),
 	Color("#4b4d50"),
 	Color("#a74335"),
+	Color("#b94b48"),
 ]
 
 var selected_material := 0
 var selected_hotbar_slot := 0
 var hotbar_slot_materials: Array[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-var inventory := [30, 30, 20, 5, 20, 20, 10, 20, 5, 0, 0, 0, 0, 0, 0]
+var inventory := [30, 30, 20, 5, 20, 20, 10, 20, 5, 0, 0, 0, 0, 0, 0, 0]
 var player_health := 20.0
 var player_hunger := 20.0
 var starvation_damage_timer := 3.0
+var air_remaining := 15.0
+var drowning_damage_timer := 1.0
+var player_was_on_floor := false
+var fall_peak_y := 2.0
+var monster_attack_cooldown := 0.0
 var occupied: Dictionary = {}
 var info_label: Label
 var hotbar_labels: Array[Label] = []
@@ -36,8 +42,6 @@ var hotbar_panels: Array[PanelContainer] = []
 var hotbar_contents: Array[Control] = []
 var hotbar_icons: Array[TextureRect] = []
 var hotbar_previews: Array[SubViewport] = []
-var message_label: Label
-var message_timer := 0.0
 var selection_label: Label
 var selection_timer := 0.0
 var player: CharacterBody3D
@@ -49,6 +53,9 @@ var scaffold_material: Material
 var lamp_edge_material: Material
 var furnace_opening_material: Material
 var furnace_trim_material: Material
+var bed_frame_material: Material
+var bed_blanket_material: Material
+var bed_pillow_material: Material
 var water_flow_queue: Array[Dictionary] = []
 var water_flow_timer := 0.0
 var clouds: Array[Node3D] = []
@@ -71,6 +78,14 @@ var furnace_panel: PanelContainer
 var furnace_status_label: Label
 var furnace_active := false
 var furnace_timer := 0.0
+var world_environment: Environment
+var sun_light: DirectionalLight3D
+var moon_light: DirectionalLight3D
+var sun_visual: MeshInstance3D
+var moon_visual: MeshInstance3D
+var cloud_material: StandardMaterial3D
+var world_time_hours := 8.0
+const FULL_DAY_SECONDS := 600.0
 
 
 func _ready() -> void:
@@ -102,15 +117,55 @@ func create_world() -> void:
 	env.ambient_light_energy = 0.65
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	environment.environment = env
+	world_environment = env
 	add_child(environment)
 
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55, -35, 0)
-	sun.light_energy = 1.15
-	sun.shadow_enabled = true
-	add_child(sun)
+	sun_light = DirectionalLight3D.new()
+	sun_light.rotation_degrees = Vector3(-55, -35, 0)
+	sun_light.light_energy = 1.15
+	sun_light.shadow_enabled = true
+	add_child(sun_light)
+	moon_light = DirectionalLight3D.new()
+	moon_light.light_color = Color("#91a9dc")
+	moon_light.light_energy = 0.0
+	moon_light.shadow_enabled = false
+	add_child(moon_light)
+	create_celestial_bodies()
 	create_clouds()
 	create_mining_overlay()
+	update_day_night(0.0)
+
+
+func create_celestial_bodies() -> void:
+	var sun_material := StandardMaterial3D.new()
+	sun_material.albedo_color = Color("#ffd86a")
+	sun_material.emission_enabled = true
+	sun_material.emission = Color("#ffd86a")
+	sun_material.emission_energy_multiplier = 2.2
+	sun_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var sun_mesh := SphereMesh.new()
+	sun_mesh.radius = 5.5
+	sun_mesh.height = 11.0
+	sun_mesh.material = sun_material
+	sun_visual = MeshInstance3D.new()
+	sun_visual.mesh = sun_mesh
+	sun_visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(sun_visual)
+
+	var moon_material := StandardMaterial3D.new()
+	moon_material.albedo_color = Color("#dbe7ff")
+	moon_material.emission_enabled = true
+	moon_material.emission = Color("#a9c5ff")
+	moon_material.emission_energy_multiplier = 1.5
+	moon_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var moon_mesh := SphereMesh.new()
+	moon_mesh.radius = 4.6
+	moon_mesh.height = 9.2
+	moon_mesh.material = moon_material
+	moon_visual = MeshInstance3D.new()
+	moon_visual.mesh = moon_mesh
+	moon_visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(moon_visual)
 
 
 func create_mining_overlay() -> void:
@@ -144,7 +199,7 @@ void fragment() {
 
 
 func create_clouds() -> void:
-	var cloud_material := StandardMaterial3D.new()
+	cloud_material = StandardMaterial3D.new()
 	cloud_material.albedo_color = Color(1.0, 1.0, 1.0, 0.90)
 	cloud_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	cloud_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -169,8 +224,39 @@ func create_clouds() -> void:
 		clouds.append(cloud)
 
 
+func update_day_night(delta: float) -> void:
+	world_time_hours = fmod(world_time_hours + delta * 24.0 / FULL_DAY_SECONDS, 24.0)
+	var orbit_angle := (world_time_hours - 6.0) / 24.0 * TAU
+	var sun_height := sin(orbit_angle)
+	var daylight := smoothstep(-0.16, 0.18, sun_height)
+	var night_strength := 1.0 - daylight
+
+	var day_sky := Color("#9fd8f5")
+	var night_sky := Color("#17152f")
+	world_environment.background_color = night_sky.lerp(day_sky, daylight)
+	world_environment.ambient_light_color = Color("#7183b8").lerp(Color.WHITE, daylight)
+	world_environment.ambient_light_energy = lerpf(0.18, 0.65, daylight)
+
+	sun_light.light_energy = 1.15 * daylight
+	moon_light.light_energy = 0.24 * night_strength
+	var sun_rotation_x := orbit_angle - deg_to_rad(145.0)
+	sun_light.rotation = Vector3(sun_rotation_x, deg_to_rad(-35.0), 0.0)
+	moon_light.rotation = Vector3(sun_rotation_x + PI, deg_to_rad(-35.0), 0.0)
+
+	var orbit_direction := Vector3(cos(orbit_angle), sun_height, 0.24).normalized()
+	var sky_anchor := player.global_position if is_instance_valid(player) else Vector3.ZERO
+	sun_visual.global_position = sky_anchor + orbit_direction * 140.0
+	moon_visual.global_position = sky_anchor - orbit_direction * 140.0
+	sun_visual.visible = sun_height > -0.10
+	moon_visual.visible = sun_height < 0.10
+
+	var day_cloud := Color(1.0, 1.0, 1.0, 0.90)
+	var night_cloud := Color(0.035, 0.04, 0.075, 0.94)
+	cloud_material.albedo_color = night_cloud.lerp(day_cloud, daylight)
+
+
 func create_animals() -> void:
-	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken"]
+	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken", "rabbit", "rabbit", "duck", "duck"]
 	for index in species_list.size():
 		var angle := TAU * float(index) / float(species_list.size()) + randf_range(-0.25, 0.25)
 		var distance := randf_range(10.0, 22.0)
@@ -188,7 +274,10 @@ func spawn_animals_out_of_view() -> void:
 		camera_forward.y = 0
 	camera_forward = camera_forward.normalized()
 	var behind: Vector3 = -camera_forward
-	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken"]
+	var species_list := ["cow", "cow", "sheep", "sheep", "pig", "pig", "chicken", "chicken", "rabbit", "duck"]
+	# 怪物严格只进入夜间生成列表。
+	if is_night_time():
+		species_list.append_array(["monster", "monster"])
 	for animal_species in species_list:
 		if get_tree().get_nodes_in_group("animals").size() >= MAX_ANIMALS:
 			break
@@ -212,6 +301,8 @@ func spawn_animal(animal_species: String, spawn_position: Vector3) -> void:
 	animal.setup(animal_species, spawn_position)
 	animal.died.connect(on_animal_died)
 	add_child(animal)
+	if animal_species == "monster":
+		animal.call("set_chase_target", player)
 
 
 func attack_animal(animal: Node) -> void:
@@ -227,13 +318,31 @@ func attack_animal(animal: Node) -> void:
 
 
 func on_animal_died(animal_species: String, drop_position: Vector3) -> void:
-	var meat_drop: int = {"cow": 3, "sheep": 2, "pig": 3, "chicken": 1}.get(animal_species, 1)
-	create_item_drop(14, meat_drop, drop_position)
+	var meat_drop: int = {"cow": 3, "sheep": 2, "pig": 3, "chicken": 1, "rabbit": 1, "duck": 2, "monster": 0}.get(animal_species, 0)
+	if meat_drop > 0:
+		create_item_drop(14, meat_drop, drop_position)
 	show_message("击败%s，掉落了 %d 块肉" % [get_species_name(animal_species), meat_drop])
 
 
 func get_species_name(animal_species: String) -> String:
-	return {"cow": "牛", "sheep": "羊", "pig": "猪", "chicken": "鸡"}.get(animal_species, "动物")
+	return {"cow": "牛", "sheep": "羊", "pig": "猪", "chicken": "鸡", "rabbit": "兔子", "duck": "鸭子", "monster": "暗影兽"}.get(animal_species, "动物")
+
+
+func is_night_time() -> bool:
+	return world_time_hours >= 18.0 or world_time_hours < 6.0
+
+
+func update_monsters(delta: float) -> void:
+	monster_attack_cooldown = maxf(0.0, monster_attack_cooldown - delta)
+	for creature: Node in get_tree().get_nodes_in_group("animals"):
+		if str(creature.get("species")) != "monster":
+			continue
+		if not is_night_time():
+			creature.queue_free()
+			continue
+		if creature.global_position.distance_to(player.global_position) < 1.25 and monster_attack_cooldown <= 0.0:
+			monster_attack_cooldown = 1.2
+			damage_player(1.0)
 
 
 func apply_water_and_player_pushes() -> void:
@@ -571,6 +680,19 @@ void fragment() {
 	meat_material.albedo_color = Color("#a74335")
 	meat_material.roughness = 0.86
 	block_materials.append(meat_material)
+	var bed_frame := StandardMaterial3D.new()
+	bed_frame.albedo_color = Color("#8a5a32")
+	bed_frame.roughness = 0.84
+	bed_frame_material = bed_frame
+	var bed_blanket := StandardMaterial3D.new()
+	bed_blanket.albedo_color = Color("#b94b48")
+	bed_blanket.roughness = 0.88
+	bed_blanket_material = bed_blanket
+	var bed_pillow := StandardMaterial3D.new()
+	bed_pillow.albedo_color = Color("#eee8dc")
+	bed_pillow.roughness = 0.92
+	bed_pillow_material = bed_pillow
+	block_materials.append(bed_blanket_material)
 
 
 func create_shader_material(code: String) -> ShaderMaterial:
@@ -988,7 +1110,7 @@ func create_furnace_details(parent: Node3D) -> void:
 
 
 func place_block(hit_position: Vector3) -> void:
-	if selected_material >= 14:
+	if selected_material == 14:
 		show_message("肉不能作为方块放置")
 		return
 	var grid_position := Vector3i(
@@ -999,6 +1121,9 @@ func place_block(hit_position: Vector3) -> void:
 	if occupied.has(grid_position):
 		show_message("这里已经有方块了")
 		return
+	var bed_second_cell := grid_position + get_bed_direction() if selected_material == 15 else grid_position
+	if selected_material == 15 and occupied.has(bed_second_cell):
+		return
 	if selected_material == 3 and occupied.has(grid_position + Vector3i.UP):
 		show_message("门上方需要留出一格空间")
 		return
@@ -1006,7 +1131,7 @@ func place_block(hit_position: Vector3) -> void:
 		show_message("背包里没有这种材料")
 		return
 	var player_grid := Vector3i(roundi(player.position.x), roundi(player.position.y), roundi(player.position.z))
-	if grid_position.x == player_grid.x and grid_position.z == player_grid.z and grid_position.y in [player_grid.y, player_grid.y + 1]:
+	if (grid_position.x == player_grid.x and grid_position.z == player_grid.z and grid_position.y in [player_grid.y, player_grid.y + 1]) or (selected_material == 15 and bed_second_cell.x == player_grid.x and bed_second_cell.z == player_grid.z and bed_second_cell.y in [player_grid.y, player_grid.y + 1]):
 		show_message("不能把方块放在自己身上")
 		return
 	inventory[selected_material] -= 1
@@ -1018,6 +1143,8 @@ func place_block(hit_position: Vector3) -> void:
 		var water_source := create_water(grid_position, 0, true, 0, Vector2.ZERO, 1.0)
 		var source_id: int = water_source.get_meta("flow_source_id")
 		queue_water_spread(grid_position, 0, source_id, Vector2.ZERO)
+	elif selected_material == 15:
+		create_bed(grid_position)
 	else:
 		create_block(grid_position, selected_material)
 	update_ui()
@@ -1167,6 +1294,47 @@ func create_door(grid_position: Vector3i) -> StaticBody3D:
 	occupied[grid_position] = door
 	occupied[grid_position + Vector3i.UP] = door
 	return door
+
+
+func get_bed_direction() -> Vector3i:
+	var snapped_yaw := roundf(player.rotation.y / (PI * 0.5)) * (PI * 0.5)
+	var forward := Vector3(0, 0, -1).rotated(Vector3.UP, snapped_yaw)
+	return Vector3i(roundi(forward.x), 0, roundi(forward.z))
+
+
+func create_bed(grid_position: Vector3i) -> StaticBody3D:
+	var bed := StaticBody3D.new()
+	bed.name = "Bed"
+	var snapped_yaw := roundf(player.rotation.y / (PI * 0.5)) * (PI * 0.5)
+	var second_cell := grid_position + get_bed_direction()
+	bed.position = Vector3(grid_position)
+	bed.rotation.y = snapped_yaw
+	bed.set_meta("grid_position", grid_position)
+	bed.set_meta("occupied_cells", [grid_position, second_cell])
+	bed.set_meta("material_index", 15)
+	bed.set_meta("removable", true)
+	bed.set_meta("is_bed", true)
+	create_bed_visual(bed)
+
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(0.94, 0.48, 1.94)
+	collision.shape = shape
+	collision.position = Vector3(0, 0.24, -0.5)
+	bed.add_child(collision)
+	add_child(bed)
+	occupied[grid_position] = bed
+	occupied[second_cell] = bed
+	return bed
+
+
+func create_bed_visual(parent: Node3D) -> void:
+	add_preview_box(parent, Vector3(0.90, 0.18, 1.90), Vector3(0, 0.14, -0.50), bed_frame_material)
+	add_preview_box(parent, Vector3(0.86, 0.22, 1.28), Vector3(0, 0.30, -0.20), bed_blanket_material)
+	add_preview_box(parent, Vector3(0.72, 0.18, 0.42), Vector3(0, 0.34, -1.02), bed_pillow_material)
+	for x_sign in [-1.0, 1.0]:
+		for z_position in [0.34, -1.34]:
+			add_preview_box(parent, Vector3(0.12, 0.28, 0.12), Vector3(x_sign * 0.37, 0.02, z_position), bed_frame_material)
 
 
 func create_scaffold(grid_position: Vector3i) -> StaticBody3D:
@@ -1326,14 +1494,30 @@ func remove_water_network(source_id: int) -> void:
 		tween.tween_property(water_mesh, "position:y", -0.47, 0.42).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tween.set_parallel(false)
 	tween.tween_interval(0.16)
-	tween.finished.connect(finish_water_drain.bind(draining_nodes))
-	show_message("水源已回收，水流正在退去……")
+	tween.finished.connect(finish_water_drain.bind(draining_nodes, cells_to_remove))
 
 
-func finish_water_drain(draining_nodes: Array[Node]) -> void:
+func finish_water_drain(draining_nodes: Array[Node], emptied_cells: Array[Vector3i]) -> void:
 	for water_node in draining_nodes:
 		if is_instance_valid(water_node):
 			water_node.queue_free()
+	# 排水动画结束后，相邻满水会流入空位，池塘不再留下固定方洞。
+	for cell in emptied_cells:
+		refill_water_cell_from_neighbors(cell)
+
+
+func refill_water_cell_from_neighbors(cell: Vector3i) -> void:
+	if occupied.has(cell):
+		return
+	for direction: Vector3i in [Vector3i.LEFT, Vector3i.RIGHT, Vector3i.FORWARD, Vector3i.BACK]:
+		var neighbor_cell := cell + direction
+		if not occupied.has(neighbor_cell):
+			continue
+		var neighbor: Node = occupied[neighbor_cell]
+		if neighbor.get_meta("material_index", -1) != 6 or float(neighbor.get_meta("water_amount", 0.0)) < 0.995:
+			continue
+		create_water(cell, 0, true, 0, Vector2(-direction.x, -direction.z), 1.0)
+		return
 
 
 func add_scaffold_beam(parent: Node3D, size: Vector3, beam_position: Vector3) -> void:
@@ -1360,6 +1544,9 @@ func is_player_near_scaffold(player_position: Vector3) -> bool:
 func interact_with_block(collider: Node) -> void:
 	if not is_instance_valid(collider):
 		return
+	if collider.get_meta("is_bed", false):
+		sleep_in_bed()
+		return
 	if collider.get_meta("is_furnace", false):
 		toggle_furnace()
 		return
@@ -1372,6 +1559,14 @@ func interact_with_block(collider: Node) -> void:
 	var tween := create_tween()
 	tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_property(collider, "rotation:y", target_yaw, 0.22)
+
+
+func sleep_in_bed() -> void:
+	if not is_night_time():
+		return
+	world_time_hours = 6.25
+	update_day_night(0.0)
+	update_status_text()
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -1423,8 +1618,8 @@ func consume_meat() -> void:
 		show_message("现在还不饿")
 		return
 	inventory[14] -= 1
-	player_hunger = minf(20.0, player_hunger + 6.0)
-	show_message("吃下肉，恢复了饥饿值")
+	player_hunger = minf(20.0, player_hunger + 2.0)
+	show_message("吃下肉，恢复 2 点饥饿值")
 	update_ui()
 
 
@@ -1458,6 +1653,11 @@ func craft_recipe(recipe_index: int) -> void:
 			inventory[0] -= 9
 			inventory[13] += 1
 			show_message("合成完成：获得 1 个熔炉")
+		4:
+			if inventory[1] < 6:
+				return
+			inventory[1] -= 6
+			inventory[15] += 1
 	update_ui()
 
 
@@ -1499,8 +1699,8 @@ func create_ui() -> void:
 
 	info_label = Label.new()
 	info_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	info_label.position = Vector2(-210, -116)
-	info_label.size = Vector2(420, 32)
+	info_label.position = Vector2(-320, -116)
+	info_label.size = Vector2(640, 32)
 	info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	info_label.add_theme_font_size_override("font_size", 20)
 	info_label.add_theme_color_override("font_color", Color("#fff3d2"))
@@ -1577,16 +1777,6 @@ func create_ui() -> void:
 	selection_label.add_theme_color_override("font_color", Color("#fff0ad"))
 	layer.add_child(selection_label)
 
-	message_label = Label.new()
-	message_label.set_anchors_preset(Control.PRESET_CENTER)
-	message_label.position = Vector2(-180, 70)
-	message_label.size = Vector2(360, 40)
-	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	message_label.add_theme_font_size_override("font_size", 20)
-	message_label.add_theme_color_override("font_color", Color("#fff3b0"))
-	message_label.z_index = 10
-	layer.add_child(message_label)
-
 	backpack_panel = PanelContainer.new()
 	backpack_panel.set_anchors_preset(Control.PRESET_CENTER)
 	backpack_panel.position = Vector2(-350, -255)
@@ -1654,6 +1844,7 @@ func create_ui() -> void:
 		["6 木头  →  3 木门", 1],
 		["4 木头  →  4 脚手架", 2],
 		["9 石头  →  1 熔炉", 3],
+		["6 木头  →  1 床", 4],
 	]:
 		var craft_button := Button.new()
 		craft_button.text = recipe[0]
@@ -1723,6 +1914,8 @@ func create_material_preview(material_index: int) -> SubViewport:
 				add_scaffold_beam(root, Vector3(0.065, 0.065, 0.80), Vector3(x_sign * 0.40, y, 0))
 	elif material_index == 14:
 		add_preview_box(root, Vector3(0.82, 0.38, 0.58), Vector3.ZERO, block_materials[14])
+	elif material_index == 15:
+		create_bed_visual(root)
 	else:
 		var preview_size := Vector3.ONE * (0.84 if material_index == 8 else 0.92)
 		add_preview_box(root, preview_size, Vector3.ZERO, block_materials[material_index])
@@ -1749,7 +1942,7 @@ func create_material_preview(material_index: int) -> SubViewport:
 	viewport.add_child(environment)
 	var camera := Camera3D.new()
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = 2.25 if material_index == 3 else 1.75
+	camera.size = 2.25 if material_index in [3, 15] else 1.75
 	camera.look_at_from_position(Vector3(2.1, 1.7, 2.35), Vector3.ZERO)
 	viewport.add_child(camera)
 	camera.current = true
@@ -1779,7 +1972,7 @@ func refresh_hotbar_preview(slot_index: int) -> void:
 
 
 func update_ui() -> void:
-	info_label.text = "生命  %d / 20    饥饿  %d / 20" % [ceili(player_health), ceili(player_hunger)]
+	update_status_text()
 	for index in hotbar_labels.size():
 		var material_index := hotbar_slot_materials[index]
 		hotbar_labels[index].text = str(inventory[material_index])
@@ -1806,9 +1999,22 @@ func show_selected_material() -> void:
 	selection_timer = 1.8
 
 
-func show_message(text: String) -> void:
-	message_label.text = text
-	message_timer = 2.2
+func show_message(_text: String) -> void:
+	# 事件改为由世界动画和状态栏反馈，不再在屏幕中央弹出黄色文字。
+	pass
+
+
+func update_status_text() -> void:
+	if not info_label:
+		return
+	var hour := floori(world_time_hours)
+	var minute := floori((world_time_hours - float(hour)) * 60.0)
+	var oxygen_text := "    氧气 %d/15" % ceili(air_remaining) if air_remaining < 14.99 else ""
+	info_label.text = "生命 %d/20    饥饿 %d/20    时间 %02d:%02d%s" % [ceili(player_health), ceili(player_hunger), hour, minute, oxygen_text]
+
+
+func damage_player(amount: float) -> void:
+	player_health = maxf(0.0, player_health - amount)
 
 
 func update_survival(delta: float) -> void:
@@ -1818,23 +2024,53 @@ func update_survival(delta: float) -> void:
 		starvation_damage_timer -= delta
 		if starvation_damage_timer <= 0.0:
 			starvation_damage_timer = 3.0
-			player_health = maxf(0.0, player_health - 1.0)
+			damage_player(1.0)
 			show_message("太饿了：生命减少 1 点")
 	else:
 		starvation_damage_timer = 3.0
+
+	# 头部完全浸水十五秒后，每秒受到一点溺水伤害。
+	var head_water := find_water_at_position(player.global_position + Vector3.UP * 1.25)
+	if head_water:
+		air_remaining = maxf(0.0, air_remaining - delta)
+		if air_remaining <= 0.0:
+			drowning_damage_timer -= delta
+			if drowning_damage_timer <= 0.0:
+				drowning_damage_timer = 1.0
+				damage_player(1.0)
+	else:
+		air_remaining = minf(15.0, air_remaining + delta * 5.0)
+		drowning_damage_timer = 1.0
+
+	# 从三格以上高度落地会按超出的高度计算伤害；落水会清除本次坠落距离。
+	var on_floor := player.is_on_floor()
+	if player.in_water:
+		fall_peak_y = player.global_position.y
+	elif not on_floor:
+		fall_peak_y = maxf(fall_peak_y, player.global_position.y)
+	elif not player_was_on_floor:
+		var fall_distance := fall_peak_y - player.global_position.y
+		if fall_distance > 3.0:
+			damage_player(float(floori(fall_distance - 2.0)))
+		fall_peak_y = player.global_position.y
+	player_was_on_floor = on_floor
+
 	if player_health <= 0.0:
 		player_health = 20.0
 		player_hunger = 10.0
+		air_remaining = 15.0
+		fall_peak_y = 2.0
 		player.position = Vector3(0, 2, 6)
 		player.velocity = Vector3.ZERO
 		show_message("生命耗尽，已回到出生点")
-	if info_label:
-		info_label.text = "生命  %d / 20    饥饿  %d / 20" % [ceili(player_health), ceili(player_hunger)]
+	update_status_text()
 
 
 func _process(delta: float) -> void:
 	update_mining(delta)
 	update_item_drops(delta)
+	update_day_night(delta)
+	update_monsters(delta)
 	update_survival(delta)
 	apply_water_and_player_pushes()
 	var player_ground_cell := Vector3i(roundi(player.position.x), 0, roundi(player.position.z))
@@ -1866,10 +2102,6 @@ func _process(delta: float) -> void:
 	if water_flow_timer <= 0.0 and not water_flow_queue.is_empty():
 		water_flow_timer = 0.055
 		process_next_water_flow()
-	if message_timer > 0:
-		message_timer -= delta
-		if message_timer <= 0:
-			message_label.text = ""
 	if selection_timer > 0.0:
 		selection_timer -= delta
 		selection_label.modulate.a = clampf(selection_timer / 0.45, 0.0, 1.0) if selection_timer < 0.45 else 1.0
