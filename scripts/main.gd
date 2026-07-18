@@ -57,10 +57,10 @@ var water_flow_queue: Array[Dictionary] = []
 var water_flow_timer := 0.0
 var clouds: Array[Node3D] = []
 var animal_spawn_timer := 60.0
-var natural_region_spawn_timer := 120.0
-var natural_water_spawn_timer := 180.0
 var generated_region_centers: Array[Vector3] = [Vector3.ZERO]
 var generated_water_centers: Array[Vector3] = []
+var generated_ground_cells: Dictionary = {}
+var last_ground_center := Vector3i.ZERO
 var backpack_panel: PanelContainer
 var backpack_buttons: Array[Button] = []
 var backpack_count_labels: Array = []
@@ -82,7 +82,8 @@ func _ready() -> void:
 	create_world()
 	create_player()
 	create_ui()
-	create_infinite_ground()
+	create_destructible_ground(Vector3i.ZERO)
+	create_bedrock_floor()
 	create_natural_landscape()
 	spawn_natural_pond(Vector3i(-35, 0, 75))
 	spawn_natural_pond(Vector3i(42, 0, 78))
@@ -557,53 +558,59 @@ func create_player() -> void:
 	player.scaffold_check = is_player_near_scaffold
 
 
-func create_infinite_ground() -> void:
-	# WorldBoundaryShape3D 提供真正无限的水平碰撞面；大网格只负责视觉显示。
-	var ground := StaticBody3D.new()
-	ground.name = "InfiniteGround"
-	ground.position.y = -0.5
-	ground.set_meta("removable", false)
+func create_destructible_ground(center: Vector3i) -> void:
+	# 表层保持较大的可见范围，地下层只在玩家附近生成，避免大量不可见节点拖慢游戏。
+	const SURFACE_RADIUS := 32
+	const UNDERGROUND_RADIUS := 12
+	last_ground_center = Vector3i(center.x, 0, center.z)
+	for x in range(center.x - SURFACE_RADIUS, center.x + SURFACE_RADIUS + 1):
+		for z in range(center.z - SURFACE_RADIUS, center.z + SURFACE_RADIUS + 1):
+			var cell := Vector3i(x, 0, z)
+			if generated_ground_cells.has(cell):
+				continue
+			generated_ground_cells[cell] = true
+			if not occupied.has(cell):
+				create_block(cell, 5, true)
+	# 第二层仍是草方块，第三、第四层改为石头；挖掉后都不会重新生成。
+	for x in range(center.x - UNDERGROUND_RADIUS, center.x + UNDERGROUND_RADIUS + 1):
+		for z in range(center.z - UNDERGROUND_RADIUS, center.z + UNDERGROUND_RADIUS + 1):
+			for y in range(-1, -4, -1):
+				var cell := Vector3i(x, y, z)
+				if generated_ground_cells.has(cell):
+					continue
+				generated_ground_cells[cell] = true
+				if not occupied.has(cell):
+					create_block(cell, 5 if y == -1 else 0, true)
+
+
+func create_bedrock_floor() -> void:
+	# 黑色底层位于第四层石头正下方，只负责阻挡坠落，永远不能挖除。
+	var bedrock := StaticBody3D.new()
+	bedrock.name = "BlackBedrock"
+	bedrock.position.y = -3.5
+	bedrock.set_meta("removable", false)
 
 	var collision := CollisionShape3D.new()
 	var boundary := WorldBoundaryShape3D.new()
 	boundary.plane = Plane(Vector3.UP, 0.0)
 	collision.shape = boundary
-	ground.add_child(collision)
+	bedrock.add_child(collision)
 
 	var mesh_instance := MeshInstance3D.new()
 	var plane_mesh := PlaneMesh.new()
 	plane_mesh.size = Vector2(2000, 2000)
-	plane_mesh.subdivide_width = 100
-	plane_mesh.subdivide_depth = 100
-	var ground_material := create_shader_material("""
-shader_type spatial;
-varying vec3 world_pos;
-void vertex() { world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
-void fragment() {
-	// 无限草皮使用与草方块顶部相近、但更柔和的细碎纹理。
-	vec2 cell = abs(fract(world_pos.xz + vec2(0.5)) - vec2(0.5));
-	float grid = smoothstep(0.465, 0.49, max(cell.x, cell.y));
-	float grass_noise = sin(floor(world_pos.x * 13.0) * 2.17 + floor(world_pos.z * 13.0) * 4.31) * 0.032;
-	float fine_blades = sin(world_pos.x * 71.0) * sin(world_pos.z * 67.0) * 0.018;
-	vec3 grass = vec3(0.18, 0.46, 0.14) + vec3(grass_noise + fine_blades, grass_noise * 1.15 + fine_blades, grass_noise * 0.45);
-	ALBEDO = mix(grass, vec3(0.12, 0.34, 0.10), grid * 0.30);
-	ROUGHNESS = 0.96;
-}
-""")
-	plane_mesh.material = ground_material
+	var black_material := StandardMaterial3D.new()
+	black_material.albedo_color = Color("#08090b")
+	black_material.roughness = 1.0
+	plane_mesh.material = black_material
 	mesh_instance.mesh = plane_mesh
-	ground.add_child(mesh_instance)
-	add_child(ground)
+	bedrock.add_child(mesh_instance)
+	add_child(bedrock)
 
 
 func create_natural_landscape() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 724031
-	# 中央 41×41 草地区域全部由可拆除方块组成；下层安全地面防止掉出世界。
-	for x in range(-20, 21):
-		for z in range(-20, 21):
-			create_block(Vector3i(x, 0, z), 5, true)
-
 	# 低矮草丘。
 	for hill_index in range(9):
 		var center := Vector3i(rng.randi_range(-18, 18), 1, rng.randi_range(-18, 18))
@@ -937,7 +944,7 @@ func remove_block(collider: Node) -> void:
 	if not collider.has_meta("grid_position"):
 		return
 	if not collider.get_meta("removable", false):
-		show_message("建造地基不能拆除")
+		show_message("黑色底层无法挖掘")
 		return
 	var material_index: int = collider.get_meta("material_index")
 	if material_index == 6 and collider.get_meta("water_source", false):
@@ -1809,6 +1816,9 @@ func show_message(text: String) -> void:
 func _process(delta: float) -> void:
 	update_mining(delta)
 	apply_water_and_player_pushes()
+	var player_ground_cell := Vector3i(roundi(player.position.x), 0, roundi(player.position.z))
+	if maxi(absi(player_ground_cell.x - last_ground_center.x), absi(player_ground_cell.z - last_ground_center.z)) >= 8:
+		create_destructible_ground(player_ground_cell)
 	if furnace_active:
 		furnace_timer -= delta
 		if furnace_timer <= 0.0:
@@ -1818,16 +1828,6 @@ func _process(delta: float) -> void:
 			update_ui()
 			show_message("烧制完成：获得 1 个玻璃")
 		update_furnace_status()
-	natural_region_spawn_timer -= delta
-	if natural_region_spawn_timer <= 0.0:
-		natural_region_spawn_timer += 120.0
-		spawn_dynamic_natural_region(choose_unseen_generation_position(22.0))
-	natural_water_spawn_timer -= delta
-	if natural_water_spawn_timer <= 0.0:
-		natural_water_spawn_timer += 180.0
-		for attempt in range(10):
-			if spawn_natural_pond(choose_unseen_generation_position(18.0)):
-				break
 	animal_spawn_timer -= delta
 	if animal_spawn_timer <= 0.0:
 		animal_spawn_timer += 60.0
