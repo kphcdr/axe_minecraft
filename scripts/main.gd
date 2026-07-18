@@ -51,6 +51,8 @@ var door_material: Material
 var door_handle_material: Material
 var scaffold_material: Material
 var lamp_edge_material: Material
+var furnace_opening_material: Material
+var furnace_trim_material: Material
 var water_flow_queue: Array[Dictionary] = []
 var water_flow_timer := 0.0
 var clouds: Array[Node3D] = []
@@ -357,6 +359,14 @@ void fragment() {
 	scaffold.albedo_color = Color("#d3a04c")
 	scaffold.roughness = 0.82
 	scaffold_material = scaffold
+	var furnace_opening := StandardMaterial3D.new()
+	furnace_opening.albedo_color = Color("#17191c")
+	furnace_opening.roughness = 0.98
+	furnace_opening_material = furnace_opening
+	var furnace_trim := StandardMaterial3D.new()
+	furnace_trim.albedo_color = Color("#55595d")
+	furnace_trim.roughness = 0.92
+	furnace_trim_material = furnace_trim
 	# 门和脚手架各自使用专用几何，这两个占位让数组索引与材料编号保持一致。
 	block_materials.append(door_material)
 	block_materials.append(scaffold_material)
@@ -417,32 +427,20 @@ void fragment() {
 	block_materials.append(create_shader_material("""
 shader_type spatial;
 varying vec3 local_normal;
-void vertex() { local_normal = NORMAL; }
+varying vec3 local_pos;
+float hash(vec3 p) { return fract(sin(dot(p, vec3(31.7, 67.3, 13.1))) * 43758.5453); }
+void vertex() { local_normal = NORMAL; local_pos = VERTEX; }
 void fragment() {
-	// 简化的经典方块熔炉：纯灰炉体，不使用裂缝、砖缝或细碎噪点。
-	vec3 stone = vec3(0.40, 0.41, 0.42);
+	// 大块、低对比度的灰色石面；没有裂缝或勾边。
+	float patch = (hash(floor((local_pos + vec3(0.5)) * 4.0)) - 0.5) * 0.07;
+	vec3 stone = vec3(0.41, 0.42, 0.43) + vec3(patch);
 	if (local_normal.y > 0.55) {
-		stone = vec3(0.46, 0.47, 0.48);
+		stone += vec3(0.045);
 	} else if (abs(local_normal.x) > 0.55) {
-		stone = vec3(0.36, 0.37, 0.38);
-	}
-
-	if (local_normal.z > 0.55) {
-		// 正面只保留宽灰边框和方形黑炉口，造型醒目但纹理更简洁。
-		vec2 outer = step(vec2(0.16, 0.15), UV) * step(UV, vec2(0.84, 0.66));
-		vec2 inner = step(vec2(0.24, 0.23), UV) * step(UV, vec2(0.76, 0.57));
-		float outer_mask = outer.x * outer.y;
-		float inner_mask = inner.x * inner.y;
-		float rim = clamp(outer_mask - inner_mask, 0.0, 1.0);
-		stone = mix(stone, vec3(0.25, 0.26, 0.27), rim);
-		stone = mix(stone, vec3(0.055, 0.060, 0.065), inner_mask);
-
-		// 炉口上沿增加一条宽而平整的深灰压条，不画裂纹。
-		vec2 lintel = step(vec2(0.20, 0.72), UV) * step(UV, vec2(0.80, 0.80));
-		stone = mix(stone, vec3(0.28, 0.29, 0.30), lintel.x * lintel.y);
+		stone -= vec3(0.025);
 	}
 	ALBEDO = stone;
-	ROUGHNESS = 0.92;
+	ROUGHNESS = 0.96;
 }
 """))
 	block_materials.append(create_shader_material("""
@@ -827,6 +825,8 @@ func create_block(grid_position: Vector3i, material_index: int, removable := tru
 		light.omni_range = 4.5
 		light.shadow_enabled = false
 		block.add_child(light)
+	elif material_index == 13:
+		create_furnace_details(block)
 
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
@@ -887,6 +887,15 @@ func add_lamp_edge(parent: Node3D, size: Vector3, edge_position: Vector3) -> voi
 	edge.mesh = mesh
 	edge.position = edge_position
 	parent.add_child(edge)
+
+
+func create_furnace_details(parent: Node3D) -> void:
+	# 炉口是局部的立体结构，不再用一圈边框包住整个面。
+	add_preview_box(parent, Vector3(0.54, 0.34, 0.025), Vector3(0, -0.10, 0.508), furnace_opening_material)
+	# 炉檐稍微向外突出，投下阴影，让开口看起来是凹进去的。
+	add_preview_box(parent, Vector3(0.66, 0.10, 0.105), Vector3(0, 0.13, 0.515), furnace_trim_material)
+	# 下方托台比炉口略宽，但不连接方块四周的棱。
+	add_preview_box(parent, Vector3(0.64, 0.09, 0.12), Vector3(0, -0.32, 0.525), furnace_trim_material)
 
 
 func place_block(hit_position: Vector3) -> void:
@@ -1717,6 +1726,8 @@ func create_material_preview(material_index: int) -> SubViewport:
 			create_glass_edges(root)
 		elif material_index == 8:
 			create_lamp_edges(root)
+		elif material_index == 13:
+			create_furnace_details(root)
 
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-48, -35, 0)
